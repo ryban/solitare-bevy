@@ -1,0 +1,16 @@
+[package]
+name = "solitare"
+version = "0.1.0"
+authors = ["Ryan Van Gilder <rvangilder1@gmail.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = "0.5"
+rand = "0.8"
+
+
+[patch.crates-io]
+# override it with bevy from git just to use the 0.6 changes becuase why not
+bevy = { git = "https://github.com/bevyengine/bevy" }
