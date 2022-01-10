@@ -11,6 +11,8 @@ use rand::prelude::*;
 const BACK_GREEN: usize = 5 * 13;
 const BACK_BLUE: usize = 6 * 13;
 const BACK_RED: usize = 7 * 13;
+const FINAL_STACKS: usize = 7 * 13 + 9;
+const EMPTY_SPACE: usize = 6 * 13 + 12;
 
 const CARD_WIDTH: f32 = 140.0;
 const CARD_HEIGHT: f32 = 190.0;
@@ -323,38 +325,38 @@ fn main() {
         .add_event::<Clicked>()
         .add_event::<Dropped>()
         .add_event::<MoveCard>()
-        .add_startup_system(setup.system())
+        .add_startup_system(setup)
         .add_system_set(
             SystemSet::on_enter(GameState::Menu)
-                .with_system(setup_menu.system())
+                .with_system(setup_menu)
         )
         .add_system_set(
             SystemSet::on_update(GameState::Menu)
-                .with_system(main_menu.system())
+                .with_system(main_menu)
         )
         .add_system_set(
             SystemSet::on_enter(GameState::Shuffle)
-                .with_system(reset_cards.system())
+                .with_system(reset_cards)
         )
         .add_system_set_to_stage(
-            // Run these before update so we ar absolutely sure commands are completed early
+            // Run these before update so we are absolutely sure commands are completed early
             CoreStage::PreUpdate,
             SystemSet::new()
-                .with_system(card_move_system.system())
+                .with_system(card_move_system)
         )
         .add_system_set(
             SystemSet::on_update(GameState::Playing)
-                .with_system(click_system.system().label("click"))
-                .with_system(update_click_timers.system().before("click"))
-                .with_system(clicked_system.system().after("click"))
-                .with_system(drag_system.system().label("drag").after("click"))
-                .with_system(drop_system.system().label("drop").before("click"))
-                .with_system(win_check_system.system().after("click"))
-                .with_system(card_texture_update_system.system())
-                .with_system(deck_update_system.system().after("click"))
-                .with_system(debug_duplicate_children.system())
-                .with_system(fixup_children_system.system())
-                .with_system(reset_game_button.system())
+                .with_system(click_system.label("click"))
+                .with_system(update_click_timers.before("click"))
+                .with_system(clicked_system.after("click"))
+                .with_system(drag_system.label("drag").after("click"))
+                .with_system(drop_system.label("drop").before("click"))
+                .with_system(win_check_system.after("click"))
+                .with_system(card_texture_update_system)
+                .with_system(deck_update_system.after("click"))
+                .with_system(debug_duplicate_children)
+                .with_system(fixup_children_system)
+                .with_system(reset_game_button)
         )
         .add_system_set_to_stage(
             // Run the stack cleanup code in postupdate, otherwise there will be a 1 frame
@@ -447,7 +449,7 @@ fn reset_cards(
     mut reset_button: Query<&mut Style, With<ResetButton>>
 ) {
     for entity in cleanup.iter() {
-        commands.entity(entity).despawn();
+        commands.entity(entity).despawn_recursive();
     }
 
     let mut rng = rand::thread_rng();
@@ -477,8 +479,7 @@ fn reset_cards(
             commands.spawn_bundle(SpriteSheetBundle {
                     texture_atlas: card_texture.0.clone(),
                     sprite: TextureAtlasSprite {
-                        color: Color::rgb(0.1, 0.1, 0.1),
-                        index: BACK_BLUE,
+                        index: EMPTY_SPACE,
                         ..Default::default()
                     },
                     transform: Transform::from_xyz(pos.x, pos.y, 0.0),
@@ -536,22 +537,34 @@ fn reset_cards(
 
     let deck_pos = Vec2::new((CARD_WIDTH / 2.0) + 50.0, window.height - 25.0 - (CARD_HEIGHT / 2.0));
     commands.spawn_bundle(SpriteSheetBundle {
+            texture_atlas: card_texture.0.clone(),
+            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0, window.height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
+            sprite: TextureAtlasSprite {
+                index: BACK_BLUE,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert(Deck {cards: deck})
+        .insert(Clickable::at(deck_pos - Vec2::new(CARD_WIDTH / 2.0, CARD_HEIGHT / 2.0)))
+        .with_children(|parent| {
+            // Empty space below the deck
+            parent.spawn_bundle(SpriteSheetBundle {
                 texture_atlas: card_texture.0.clone(),
-                transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0, window.height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
+                transform: Transform::from_xyz(0.0, 0.0, -1.0),
                 sprite: TextureAtlasSprite {
-                    index: BACK_BLUE,
+                    index: EMPTY_SPACE,
                     ..Default::default()
                 },
                 ..Default::default()
-            })
-            .insert(Deck {cards: deck})
-            .insert(Clickable::at(deck_pos - Vec2::new(CARD_WIDTH / 2.0, CARD_HEIGHT / 2.0)));
+            });
+        });
 
-    commands.spawn_bundle(SpriteBundle {
-            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0 + 200.0, window.height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
-            sprite: Sprite {
-                color: Color::rgb(0.25, 0.5, 0.25),
-                custom_size: Some(Vec2::new(CARD_WIDTH, CARD_HEIGHT)),
+    commands.spawn_bundle(SpriteSheetBundle {
+            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0 + 175.0, window.height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
+            texture_atlas: card_texture.0.clone(),
+            sprite: TextureAtlasSprite {
+                index: EMPTY_SPACE,
                 ..Default::default()
             },
             ..Default::default()
@@ -561,13 +574,11 @@ fn reset_cards(
     for suit in [Suit::Spades, Suit::Clubs, Suit::Hearts, Suit::Diamonds] {
         let stack_x = (deck_pos.x + (175.0 * 3.0)) + (175.0 * suit.row() as f32);
         let stack_pos = Vec2::new(stack_x, deck_pos.y);
-        let suit_index = Card {kind: CardKind::Ace, suit: suit}.texture_index();
         // TODO: Add texture for suits
         commands.spawn_bundle(SpriteSheetBundle {
             texture_atlas: card_texture.0.clone(),
             sprite: TextureAtlasSprite {
-                color: Color::rgb(0.5, 0.5, 0.5),
-                index: suit_index,
+                index: FINAL_STACKS + suit.row(),
                 ..Default::default()
             },
             transform: Transform::from_xyz(stack_pos.x, stack_pos.y, 0.0),
@@ -584,7 +595,7 @@ fn reset_cards(
     game_state.set(GameState::Playing).unwrap();
 }
 
-fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut reset_button: Query<&mut Style, With<ResetButton>>, font: Res<FontHandle>) {
+fn setup_menu(mut commands: Commands, font: Res<FontHandle>, mut reset_button: Query<&mut Style, With<ResetButton>>) {
     commands
         .spawn_bundle(ButtonBundle {
             style: Style {
