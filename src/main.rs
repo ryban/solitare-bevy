@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use bevy::prelude::*;
-use bevy::log::{LogSettings, Level};
 use bevy::render::camera::{WindowOrigin, ScalingMode};
 use bevy::render::view::Visibility;
 use bevy::input::{keyboard::KeyCode, Input, mouse::MouseMotion};
@@ -8,9 +7,9 @@ use bevy::ui::Display;
 // use bevy_easings::*;
 use rand::prelude::*;
 
-const BACK_GREEN: usize = 5 * 13;
+// const BACK_GREEN: usize = 5 * 13;
 const BACK_BLUE: usize = 6 * 13;
-const BACK_RED: usize = 7 * 13;
+// const BACK_RED: usize = 7 * 13;
 const FINAL_STACKS: usize = 7 * 13 + 9;
 const EMPTY_SPACE: usize = 6 * 13 + 12;
 
@@ -151,28 +150,23 @@ impl Area {
 #[derive(Debug, Component)]
 struct Clickable {
     zone: Area,
-    enabled: bool,
 }
 
 impl Default for Clickable {
     fn default() -> Self {
         Self {
             zone: Area {pos: Vec2::new(0.0, 0.0), size: Vec2::new(CARD_WIDTH, CARD_HEIGHT)},
-            enabled: true,
         }
     }
 }
 
 impl Clickable {
     fn at(pos: Vec2) -> Self {
+        let size = Vec2::new(CARD_WIDTH, CARD_HEIGHT);
         Self {
-            zone: Area {pos: pos, size: Vec2::new(CARD_WIDTH, CARD_HEIGHT)},
+            zone: Area {pos: pos - (size / 2.0), size: size},
             ..Default::default()
         }
-    }
-
-    fn contains(&self, pos: Vec2) -> bool {
-        self.zone.contains(pos)
     }
 }
 
@@ -189,42 +183,51 @@ struct ResetButton;
 //     Draw3,
 // }
 
-#[derive(Debug)]
-struct MoveCard {
-    target: Entity,
-    to: Entity,
-}
-
-impl MoveCard {
-    fn new(target: Entity, to: Entity) -> Self {
-        Self {
-            target,
-            to
-        }
-    }
-}
-
-/// State machine
-///   Hovered -> Clicked -> Released
-///                 |
-///                 +-> Dragging -> Dropped
-#[derive(Debug, Clone, Component)]
+#[derive(Debug, Clone, Component, PartialEq)]
 enum MouseInteraction {
     /// The mouse is over this entity
     Hovered,
     /// The left mouse is held down on this entity
     Clicked(Vec2),
-    /// The left mouse was released while still hovered
-    Released(Vec2),
     /// Entity is being dragged
-    Dragging(Vec2),
-    /// The mouse was released while the entity was being dragged.
-    /// The Interaction component will be removed the frame following this one
-    Dropped(Vec2),
+    Dragging {
+        /// 2D global start location of the dragged entity
+        global_start_pos: Vec3,
+        /// Original start translation
+        local_start_pos: Vec3,
+        /// Position of the mouse on the screen when the drag started
+        start_mouse: Vec2,
+    },
+}
+
+impl MouseInteraction {
+    fn is_hovered(&self) -> bool {
+        match self {
+            MouseInteraction::Hovered => true,
+            _ => false,
+        }
+    }
+
+    fn is_clicked(&self) -> bool {
+        match self {
+            MouseInteraction::Clicked(_) => true,
+            _ => false,
+        }
+    }
+
+    fn is_dragging(&self) -> bool {
+        match self {
+            MouseInteraction::Dragging {..} => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct Clicked(Entity, Vec2);
+
+#[derive(Debug, Clone)]
+struct Released(Entity, Vec2);
 
 #[derive(Debug, Clone, Component)]
 struct LeftClicked(Vec2);
@@ -246,11 +249,7 @@ struct Droppable {
 }
 
 #[derive(Debug)]
-struct Dropped(Entity, Vec2);
-
-/// This exists because the entity inside PreviousParent is not accessible
-#[derive(Debug, Component)]
-struct PrevParent(Entity, Transform);
+struct Dropped(Entity, Vec3, Vec2);
 
 #[derive(Debug, Default, Component)]
 struct DiscardPile;
@@ -307,8 +306,6 @@ enum GameState {
 }
 
 fn main() {
-    // let mut log_settings = LogSettings::default();
-    // log_settings.level = Level::DEBUG;
     App::new()
         .insert_resource(WindowDescriptor {
             title: "Solitaire".to_string(),
@@ -320,11 +317,9 @@ fn main() {
         })
         .add_plugins(DefaultPlugins)
         .insert_resource(ClearColor(Color::rgb(0.3, 0.7, 0.1)))
-        // .insert_resource(log_settings)
         .add_state(GameState::Menu)
-        .add_event::<Clicked>()
+        .add_event::<Released>()
         .add_event::<Dropped>()
-        .add_event::<MoveCard>()
         .add_startup_system(setup)
         .add_system_set(
             SystemSet::on_enter(GameState::Menu)
@@ -338,37 +333,22 @@ fn main() {
             SystemSet::on_enter(GameState::Shuffle)
                 .with_system(reset_cards)
         )
-        .add_system_set_to_stage(
-            // Run these before update so we are absolutely sure commands are completed early
-            CoreStage::PreUpdate,
-            SystemSet::new()
-                .with_system(card_move_system)
-        )
         .add_system_set(
             SystemSet::on_update(GameState::Playing)
-                .with_system(click_system.label("click"))
-                .with_system(update_click_timers.before("click"))
-                .with_system(clicked_system.after("click"))
-                .with_system(drag_system.label("drag").after("click"))
-                .with_system(drop_system.label("drop").before("click"))
-                .with_system(win_check_system.after("click"))
+                .with_system(update_click_timers)
+                .with_system(mouse_interaction_system.label("mouse"))
+                .with_system(click_system.after("mouse"))
+                .with_system(drop_system.after("mouse"))
+                .with_system(win_check_system)
                 .with_system(card_texture_update_system)
-                .with_system(deck_update_system.after("click"))
+                .with_system(deck_update_system)
                 .with_system(debug_duplicate_children)
-                .with_system(fixup_children_system)
                 .with_system(reset_game_button)
         )
         .add_system_set_to_stage(
-            // Run the stack cleanup code in postupdate, otherwise there will be a 1 frame
-            // delay causing cards to jump around as they are dragged/dropped/double clicked
-            // Using system labels and .after() etc it is clear that there are multiple
-            // systems updating the state of dragged cards
-            CoreStage::PostUpdate,
-            // Change these to just run off of some events or changes
-            // so that it doesn't run all the time
+            CoreStage::PreUpdate,
             SystemSet::new()
-                .with_system(discard_pile_update_system.system())
-                .with_system(card_stacks_update_system.system())
+                .with_system(clickable_bounds_update_system.system())
         )
         .add_system_set(
             SystemSet::on_enter(GameState::Won)
@@ -468,7 +448,6 @@ fn reset_cards(
 
     let stacks_y = window.height * 0.6;
 
-    // FIXME: Math to make this better
     fn stack_x(stack: usize) -> f32 {
         50.0 + (175.0 * (stack as f32)) + (CARD_WIDTH / 2.0)
     }
@@ -486,7 +465,6 @@ fn reset_cards(
                     ..Default::default()
                 })
                 .insert(Stack::new(StackKind::Stack))
-                // .insert(Clickable::at(pos - Vec2::new(CARD_WIDTH / 2.0, CARD_HEIGHT / 2.0)))
                 // Droppable area extending to the bottom of the screen
                 .insert(Droppable {zone: Area::new(pos.x - CARD_WIDTH / 2.0, 0.0, CARD_WIDTH, pos.y + CARD_HEIGHT)})
                 .id()
@@ -546,7 +524,7 @@ fn reset_cards(
             ..Default::default()
         })
         .insert(Deck {cards: deck})
-        .insert(Clickable::at(deck_pos - Vec2::new(CARD_WIDTH / 2.0, CARD_HEIGHT / 2.0)))
+        .insert(Clickable::at(deck_pos))
         .with_children(|parent| {
             // Empty space below the deck
             parent.spawn_bundle(SpriteSheetBundle {
@@ -793,56 +771,6 @@ fn deck_update_system(mut decks: Query<(&Deck, &mut Visibility), Changed<Deck>>)
     }
 }
 
-fn discard_pile_update_system(
-    discard_pile: Query<Entity, With<DiscardPile>>,
-    children: Query<&Children>,
-    mut card: Query<(&mut Visibility, &mut Clickable, &mut Transform, &GlobalTransform)>
-) {
-    let discard = match discard_pile.get_single() {
-        Ok(e) => e,
-        Err(_) => return
-    };
-    let mut top = None;
-    let first_child = children.get(discard).ok().map(|c| c.first()).flatten().cloned();
-
-    walk_children(first_child, &children, &mut |child| {
-        if let Ok((mut visible, mut clickable, mut transform, global_transform)) = card.get_mut(child) {
-            visible.is_visible = false;
-            transform.translation = Vec3::new(0.0, 0.0, 1.0);
-            clickable.enabled = false;
-            clickable.zone.pos = Vec2::new(global_transform.translation.x, global_transform.translation.y) - Vec2::new(CARD_WIDTH / 2.0, CARD_HEIGHT / 2.0);
-        }
-        top = Some(child);
-    });
-
-    if let Some(top) = top {
-        if let Ok((mut visible, mut clickable, _, _)) = card.get_mut(top) {
-            visible.is_visible = true;
-            clickable.enabled = true;
-        }
-    }
-}
-
-fn fixup_children_system(mut commands: Commands, mut q_children: Query<(Entity, &mut Children)>, q_parent: Query<&Parent>) {
-    for (parent, children) in q_children.iter_mut() {
-        let mut to_remove = Vec::new();
-        for child in children.iter() {
-            if let Ok(actual_parent) = q_parent.get(*child) {
-                if actual_parent.0 != parent {
-                    to_remove.push(*child);
-                }
-            } else {
-                // No longer has a parent
-                to_remove.push(*child);
-            }
-        }
-        if to_remove.len() > 0 {
-            error!("{:?} has incorrect children = {:?}; invalid = {:?}", parent, children, to_remove);
-            commands.entity(parent).remove_children(&to_remove);
-        }
-    }
-}
-
 fn win_check_system(mut game_state: ResMut<State<GameState>>, q_stacks: Query<(Entity, &Stack)>, q_card: Query<&Card>, q_children: Query<&Children>) {
     let mut completed = 0;
     for (stack_entity, _) in q_stacks.iter().filter(|(_entity, stack)| match stack.kind {StackKind::Ordered(_) => true, _ => false}) {
@@ -870,7 +798,6 @@ fn update_click_timers(mut commands: Commands, time: Res<Time>, mut timers: Quer
     }
 }
 
-// This could be a system that only runs when something changes via a Changed<CardFace> event
 fn card_texture_update_system(mut cards: Query<(&Card, &CardFace, &mut TextureAtlasSprite), Changed<CardFace>>) {
     for (card, face, mut sprite) in cards.iter_mut() {
         match face {
@@ -884,268 +811,134 @@ fn card_texture_update_system(mut cards: Query<(&Card, &CardFace, &mut TextureAt
     }
 }
 
-fn card_stacks_update_system(
-    stacks: Query<(Entity, &Stack)>,
-    mut clickable: Query<(Option<&Children>, &mut Clickable, &mut Transform, &GlobalTransform), With<Card>>,
-    children: Query<&Children>,
+fn clickable_bounds_update_system(
+    mut clickables: Query<(&mut Clickable, &GlobalTransform), Changed<GlobalTransform>>,
 ) {
-    for (entity, stack) in stacks.iter() {
-        let mut depth = 0;
-        let stack_transform = match stack.kind {
-            StackKind::Ordered(_) => Vec3::new(0.0, 0.0, 1.0),
-            StackKind::Stack => Vec3::new(0.0, -CARD_STACK_SPACE, 1.0),
-        };
-        let first_child = children.get(entity).ok().map(|c| c.first()).flatten().cloned();
+    for (mut clickable, global_transform) in clickables.iter_mut() {
+        clickable.zone.pos = Vec2::new(global_transform.translation.x, global_transform.translation.y) - (clickable.zone.size / 2.0);
+    }
+}
 
-        walk_children(first_child, &children, &mut |child| {
-            if let Ok((maybe_children, mut clickable, mut transform, global_transform)) = clickable.get_mut(child) {
-                if depth == 0 {
-                    *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
-                } else {
-                    *transform.translation = *stack_transform.clone();
+fn mouse_interaction_system(
+    mut commands: Commands,
+    mouse: Res<Input<MouseButton>>,
+    mut mouse_movements: EventReader<MouseMotion>,
+    windows: Res<Windows>,
+    q_clickable: Query<(Entity, &GlobalTransform, &Clickable)>,
+    mut q_interaction: Query<(Entity, &mut MouseInteraction, &GlobalTransform)>,
+    mut q_transform: Query<&mut Transform>,
+    q_draggable: Query<&Draggable>,
+    mut ev_released: EventWriter<Released>,
+    mut ev_dropped: EventWriter<Dropped>,
+) {
+    let window = windows.get_primary().unwrap();
+    let mouse_position = match window.cursor_position() {
+        Some(p) => p,
+        None => return
+    };
+    if mouse.just_pressed(MouseButton::Left) {
+        let mut hovered = q_interaction
+                                .iter_mut()
+                                .filter(|(_, interaction, _)| interaction.is_hovered())
+                                .map(|(_, interaction, gtransform)| (interaction, gtransform))
+                                .collect::<Vec<(Mut<'_, MouseInteraction>, &GlobalTransform)>>();
+        hovered.sort_by(|(_, a), (_, b)| a.translation.z.partial_cmp(&b.translation.z).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some((interaction, pos)) = hovered.last_mut() {
+            let offset = Vec2::new(pos.translation.x, pos.translation.y) - mouse_position;
+            // Borrow checker wasn't happy unless I used as_mut() and I'm not sure why
+            // The borrow out of the Vec seems to mess with it?
+            *interaction.as_mut() = MouseInteraction::Clicked(offset);
+        }
+    } else if mouse.just_released(MouseButton::Left) {
+        // Release/Drop
+        for (entity, interaction, _) in q_interaction.iter() {
+            match *interaction {
+                // We have not moved
+                // Change these to Events?
+                MouseInteraction::Clicked(offset) => {
+                    ev_released.send(Released(entity, offset));
+                    commands.entity(entity).remove::<MouseInteraction>();
+                },
+                MouseInteraction::Dragging {local_start_pos, ..} => {
+                    ev_dropped.send(Dropped(entity, local_start_pos, mouse_position));
+                    commands.entity(entity).remove::<MouseInteraction>();
+                },
+                _ => {}
+            };
+        }
+    } else {
+        // Remove MouseInteraction from anything that is Dropped or Released
+        // This is done first because we would immediately remove the MouseInteraction if it was done below
+        // We only care if there was any motion since we are not using the delta
+        // Update Hovers
+        // We could only do this when the mouse moves, but we would need to re-add the
+        // Hovered state to any components that the mouse is still covering otherwise
+        // the mouse needs to be moved before the entity can be clicked again
+        // Could update hoverables in the mouse.just_released block as well...
+        for (entity, _, clickable) in q_clickable.iter() {
+            if clickable.zone.contains(mouse_position) {
+                // If it does not have an interaction, add Hover
+                if q_interaction.get(entity).is_err() {
+                    commands.entity(entity).insert(MouseInteraction::Hovered);
                 }
-                clickable.zone.pos = Vec2::new(global_transform.translation.x, global_transform.translation.y) - Vec2::new(CARD_WIDTH / 2.0, CARD_HEIGHT / 2.0);
-                let has_children = maybe_children.map(|c| !c.is_empty()).unwrap_or(false);
-                if has_children {
-                    if stack.kind == StackKind::Stack {
-                        clickable.zone.size = Vec2::new(CARD_WIDTH, CARD_STACK_SPACE);
-                        // origin is bottom left so we need to move the box up when we reduce the size of it
-                        clickable.zone.pos.y += CARD_HEIGHT - CARD_STACK_SPACE;
-                        clickable.enabled = true;
-                    } else {
-                        clickable.zone.size = Vec2::new(CARD_WIDTH, CARD_HEIGHT);
-                        clickable.enabled = false;
-                    }
-                } else {
-                    clickable.zone.size = Vec2::new(CARD_WIDTH, CARD_HEIGHT);
-                    clickable.enabled = true;
+            } else {
+                // This makes it hard to know when something stops being hovered, but don't really care about that though
+                // We only want to remove the component if the entity is not being dragged. Other wise moving the mouse very
+                // quickly can cause the entity to stop being dragged
+                if q_interaction.get(entity).ok().map(|(_, interaction, _)| !interaction.is_dragging()).unwrap_or(false) {
+                    commands.entity(entity).remove::<MouseInteraction>();
                 }
             }
-            depth += 1;
-        });
+        }
+        if let Some(_) = mouse_movements.iter().next() {
+            // Dragging
+            if mouse.pressed(MouseButton::Left) {
+                for (entity, mut interaction, gpos) in q_interaction.iter_mut().filter(|(_, interaction, _)| interaction.is_dragging() || interaction.is_clicked()) {
+                    match *interaction {
+                        MouseInteraction::Clicked(_) => {
+                            if q_draggable.get(entity).is_ok() {
+                                *interaction = MouseInteraction::Dragging {
+                                    global_start_pos: gpos.translation,
+                                    local_start_pos: q_transform.get_mut(entity).unwrap().translation,
+                                    start_mouse: mouse_position,
+                                };
+                            }
+                        },
+                        MouseInteraction::Dragging {global_start_pos: _, local_start_pos, start_mouse} => {
+                            let mut transform = q_transform.get_mut(entity).unwrap();
+
+                            let mouse_delta = mouse_position - start_mouse;
+                            let pos = local_start_pos + Vec3::new(mouse_delta.x, mouse_delta.y, 500.0);
+                            *transform.translation = *pos;
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 }
 
 fn click_system(
     mut commands: Commands,
-    mouse: Res<Input<MouseButton>>,
-    windows: Res<Windows>,
-    q_clickable: Query<(Entity, &GlobalTransform, &Clickable)>,
-    q_clicked: Query<(Entity, &LeftClicked)>,
-    q_dragging: Query<Entity, With<Dragging>>,
-    mut clicked_events: EventWriter<Clicked>,
-    mut dropped_events: EventWriter<Dropped>,
-) {
-    // Clicking very quickly can cause use to be dragging a card and also click on the card below it
-    // flipping that card while still holding the card. The card doesn't even get dropped either.
-    // No idea whats happening and the best way to fix it. Probably use resources instead
-    // of components becuase the resources will be updated immediately rather than at the end like components.
-    let window = windows.get_primary().unwrap();
-    if let Some(mouse_position) = window.cursor_position() {
-        if mouse.just_released(MouseButton::Left) {
-            // FIXME: releasing the left mouse button outside the window will leave it clicked
-            if let Ok((entity, clicked)) = q_clicked.get_single() {
-                if let Ok((_, _, bounds)) = q_clickable.get(entity) {
-                    if bounds.enabled && bounds.contains(mouse_position) {
-                        info!("Clicked {:?} {:?} {:?}", entity, clicked.0, bounds);
-                        clicked_events.send(Clicked(entity, clicked.0));
-                    }
-                }
-                commands.entity(entity).remove::<LeftClicked>();
-            } else {
-                for entity in q_dragging.iter() {
-                    info!("Dropped {:?} at {:?}", entity, mouse_position);
-                    commands.entity(entity).remove::<Dragging>();
-                    dropped_events.send(Dropped(entity, mouse_position));
-                }
-            }
-        } else if mouse.just_pressed(MouseButton::Left) {
-            info!("mouse pos = {:?}", mouse_position);
-            for (entity, transform, bounds) in q_clickable.iter() {
-                if bounds.contains(mouse_position) {
-                    info!("Pressed {:?} {:?} {:?}", entity, mouse_position, bounds);
-                    if bounds.enabled {
-                        info!("  Enabled!");
-                        let pos = Vec2::new(transform.translation.x, transform.translation.y);
-                        // Change this from resource to a component on the clicked entity
-                        // commands.insert_resource(Clicked(entity, mouse_position - pos));
-                        commands.entity(entity).insert(LeftClicked(mouse_position - pos));
-                        // Ensure we don't click on multiple items
-                        break
-                    } else {
-                        info!("  Not Enabled!");
-                    }
-                }
-            }
-        } else if !mouse.pressed(MouseButton::Left) {
-            for entity in q_dragging.iter() {
-                    error!("{:?} was being dragged despite the mouse not being pressed. Dropping at {:?}", entity, mouse_position);
-                    commands.entity(entity).remove::<Dragging>();
-                    dropped_events.send(Dropped(entity, mouse_position));
-                }
-        }
-    }
-}
-
-fn drag_system(
-    mut commands: Commands,
-    mouse: Res<Input<MouseButton>>,
-    q_clicked: Query<(Entity, &LeftClicked)>,
-    windows: Res<Windows>,
-    mut q_dragging: Query<(&Dragging, &mut Transform)>,
-    q_draggable: Query<Entity, With<Draggable>>,
-    q_parent: Query<&Parent>,
-    mut mouse_movements: EventReader<MouseMotion>,
-    mut q_transforms: Query<(&mut Transform, Option<&GlobalTransform>), Without<Dragging>>,
-) {
-    if mouse.just_pressed(MouseButton::Left) {
-        // This is needed to prevent a click while moving in the same frame causing
-        // an entity to be in the children list of multiple entities
-        // Maybe? Needs confirmation that this fixes it...
-        // The bug is related to double clicking so why does this matter?
-        // This is not enough likely becuase its more related to double clicking
-        // that weird race conditions between the click and drag system...
-        return
-    }
-    let window = windows.get_primary().unwrap();
-    if let Some(mouse_position) = window.cursor_position() {
-        let mut delta = Vec2::new(0.0, 0.0);
-        for motion in mouse_movements.iter() {
-            delta += Vec2::new(motion.delta.x, motion.delta.y);
-            for (dragging, mut transform) in q_dragging.iter_mut() {
-                let position = mouse_position - dragging.0;
-                transform.translation.x = position.x;
-                transform.translation.y = position.y;
-            }
-        }
-        if delta.length() > 0.0 {
-            if let Ok((clicked, LeftClicked(click_offset))) = q_clicked.get_single() {
-                if q_draggable.get(clicked).is_ok() {
-                    info!("Started dragging {:?} {:?}", clicked, delta.length());
-                    commands.entity(clicked).insert(Dragging(*click_offset));
-                    commands.entity(clicked).remove::<LeftClicked>();
-
-                    // This can fail without Option<&GlobalTransform> and I have no idea why
-                    // Its long after everything has been rendered. Its possibly because
-                    // the global transform is in the middle of being changed by another system?
-                    if let Ok((mut transform, global_transform)) = q_transforms.get_mut(clicked) {
-                        if let Ok(parent) = q_parent.get(clicked) {
-                            info!("  Removing parent {:?} from {:?}", parent.0, clicked);
-                            commands.entity(parent.0).remove_children(&[clicked]);
-                            // commands.entity(clicked).remove::<Parent>();
-                            // commands.entity(parent.0).remove::<Children>();
-                            // We cannot access the entity from the automatically added PreviousParent component
-                            // Might consider adding the "previous parent" as an Option<Entity> to the Dragging component
-                            commands.entity(clicked).insert(PrevParent(parent.0, transform.clone()));
-                        }
-
-                        if let Some(gtransform) = global_transform {
-                            *transform.translation = *gtransform.translation;
-                            transform.translation.z = 500.0;
-                        } else {
-                            info!("{:?} doesn't have a global transform?", clicked);
-                        }
-                    } else {
-                        error!("{:?} was missing its transforms????", clicked);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn drop_system(
-    mut commands: Commands,
-    q_card: Query<&Card>,
-    windows: Res<Windows>,
-    mut dropped_entities: EventReader<Dropped>,
-    _move_cards: EventWriter<MoveCard>,
-    q_droppable: Query<(Entity, &Droppable)>,
-    q_stack: Query<&Stack>,
-    q_previous_parent: Query<&PrevParent>,
-    q_children: Query<&Children>,
-    mut q_transform: Query<&mut Transform>,
-) {
-    let window = windows.get_primary().unwrap();
-    if let Some(mouse_position) = window.cursor_position() {
-        for dropped in dropped_entities.iter() {
-            let mut was_dropped = false;
-            for (droppable_entity, droppable) in q_droppable.iter() {
-                if droppable.zone.contains(mouse_position) {
-                    // Find the bottom of the drop stack
-                    let top_entity = top_entity(droppable_entity, &q_children);
-                    // If the entity is not a card we will get None
-                    let top_card = q_card.get(top_entity).ok();
-                    let stack = q_stack.get(droppable_entity).unwrap();
-                    let dropped_card = q_card.get(dropped.0);
-                    // Weren't even dragging a card...
-                    // if dropped_card.is_err() {
-                    //     break
-                    // }
-                    let has_children = q_children.get(dropped.0).ok().map(|c| !c.is_empty()).unwrap_or(false);
-                    info!("stack {:?} {:?}; top card = {:?} {:?}; dropped card {:?}; has children? {:?}", droppable_entity, stack, top_entity, top_card, dropped_card, has_children);
-                    if stack.can_stack(top_card, *dropped_card.unwrap(), has_children) {
-                        commands.entity(top_entity).add_child(dropped.0);
-                        // Cannot use MoveCard because I have not make it recursive yet
-                        // move_cards.send(MoveCard::new(dropped.0, top_entity));
-                        // commands.entity(top_entity).insert(Children::with(&[dropped.0]));
-                        // commands.entity(dropped.0).insert(Parent(top_entity));
-                        // let mut transform = q_transform.get_mut(dropped.0).unwrap();
-                        // *transform = stack.transform();
-                        was_dropped = true;
-                        break
-                    }
-                }
-            }
-            info!("was_dropped? {:?}", was_dropped);
-            if !was_dropped {
-                if let Ok(PrevParent(parent, prev_transform)) = q_previous_parent.get(dropped.0) {
-                    // Cannot use PreviousParent, need to add a different component
-                    // Reset the translation to the stack offset
-
-                    // This can fail sometimes because the parent is apparently deleted?
-                    commands.entity(*parent).add_child(dropped.0);
-                    // commands.entity(*parent).insert(Children::with(&[dropped.0]));
-                    // commands.entity(dropped.0).insert(Parent(*parent));
-
-                    let mut transform = q_transform.get_mut(dropped.0).unwrap();
-                    *transform.translation = *prev_transform.translation;
-                }
-            }
-            commands.entity(dropped.0).remove::<PrevParent>();
-        }
-    } else {
-        // Released but the mouse was not on something droppable
-        for dropped in dropped_entities.iter() {
-            if let Ok(PrevParent(parent, _transform)) = q_previous_parent.get(dropped.0) {
-                // Cannot use PreviousParent, need to add a different component
-                // Reset the translation to the stack offset
-                commands.entity(*parent).add_child(dropped.0);
-                // commands.entity(*parent).insert(Children::with(&[dropped.0]));
-                // commands.entity(dropped.0).insert(Parent(*parent));
-            }
-            commands.entity(dropped.0).remove::<PrevParent>();
-        }
-    }
-}
-
-fn clicked_system(
-    mut commands: Commands,
+    mut ev_released: EventReader<Released>,
     card_texture: Res<CardsTextureHandle>,
-    mut ev_clicked: EventReader<Clicked>,
-    mut move_cards: EventWriter<MoveCard>,
     q_card: Query<(&Card, &CardFace, Option<&WasClicked>)>,
-    mut q_deck: Query<&mut Deck, With<Deck>>,
+    mut q_deck: Query<&mut Deck>,
     q_parent: Query<&Parent>,
     q_children: Query<&Children>,
     q_stacks: Query<(Entity, &Stack)>,
     q_discard: Query<Entity, With<DiscardPile>>,
+    q_gtransform: Query<&GlobalTransform>,
+    mut q_transform: Query<&mut Transform>,
 ) {
-    for clicked in ev_clicked.iter() {
-        if let Ok(mut deck) = q_deck.get_mut(clicked.0) {
+    for Released(entity, _offset) in ev_released.iter() {
+        if let Ok(mut deck) = q_deck.get_mut(*entity) {
             match deck.cards.pop() {
                 Some(card) => {
                     let discard = q_discard.single();
+                    let discard_positon = q_gtransform.get(discard).unwrap();
+                    let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
                     let top = top_entity(discard, &q_children);
                     let new = commands.spawn_bundle(SpriteSheetBundle {
                                             texture_atlas: card_texture.0.clone(),
@@ -1154,14 +947,12 @@ fn clicked_system(
                                         })
                                         .insert(card)
                                         .insert(CardFace::Up)
-                                        .insert(Clickable::default())
+                                        .insert(Clickable::at(click_position))
                                         .insert(Draggable)
                                         .id();
-                    info!("Attempting to add {:?} to {:?} (discard = {:?})", new, top, discard);
                     commands.entity(top).add_child(new);
                 },
                 None => {
-                    info!("Reset deck");
                     let discard = q_discard.single();
                     let top = top_entity(discard, &q_children);
                     let top = if top == discard {
@@ -1176,99 +967,50 @@ fn clicked_system(
                     });
                     if let Ok(children) = q_children.get(discard) {
                         for child in children.iter() {
-                            // Is despawn_recursive too aggressive?
-                            // Could it be causing some of the issues?
-                            // I don't see how but I don't understand the issues in the first place so...
                             commands.entity(*child).despawn_recursive();
                         }
                     }
                 }
             }
-            // Clicked on the deck, no reason to check anything else
             continue
         }
 
-        if let Ok((card, face, clicked_at)) = q_card.get(clicked.0) {
+        if let Ok((card, face, maybe_clicked)) = q_card.get(*entity) {
             match face {
                 CardFace::Up => {
-                    // Only allow double clicking things that are on the top of their stack
-                    if q_children.get(clicked.0).ok().map(|c| !c.is_empty()).unwrap_or(false) {
-                        return
-                    }
-                    // As long as the WasClicked component exists the timer is still active
-                    if let Some(_was_clicked) = clicked_at {
-                        commands.entity(clicked.0).remove::<WasClicked>();
+                    let has_children = false;
+                    if maybe_clicked.is_some() && !has_children {
+                        // double click
+                        commands.entity(*entity).remove::<WasClicked>();
                         if let Some((stack_entity, stack)) = q_stacks.iter().filter(|(_, stack)| stack.kind == StackKind::Ordered(card.suit)).nth(0) {
-                            // FIXME: Something is broken here. Sometimes the stack isn't moved properly
-                            // and the card below the one that was double clicked becomes unclickable
-                            // Sometimes cards can just move around seemingly randomly
-                            // Very possibly due to 1 frame delay on dragging and clicking?
-                            // Parent/Child handling might be broken?
-                            // Possibly related to double clicking a card while its on the completed stack
-                            // I really think its just the parent/child stuff not being updated properly
-                            // Need to go over my systems first then if they look fine just make up our own
-                            // system to fixup the parents/children so the transform
-                            // system works properly
-                            // Also possibly related to the "clickable" not being disabled properly?
-                            // Also possibly just get rid of this whole thing and instead have the stacks be a single
-                            // component containing a list of cards
-                            // Dragging from a completed stack to normal stack unsuccessfully caused the card to go
-                            // back to the completed stack as a non-completed stack, so a later double click fails the
-                            // assertion here
-                            //
-                            // Best idea: If its an issue with remove_children/add_child, change this
-                            // to create a "MoveCard(entity, to)" event and run remove_children.
-                            // Then we order it so the event processing is _before_ anything that generates
-                            // the events so we have delinked the parent. Drag and drop doesn't seem
-                            // to cause have issues, so by ensuring the old parent is removed before
-                            // a new parent is added it should continue to work.
-                            // However, it does seem to happen _more_ often with the discard pile...
-                            //
-                            // The MoveCard event didn't fix anything, but it does seema bit harder to cause?
-                            //
-                            // Theory: Double-click -> card ends up on the discard and completed pile _somehow_
-                            // but its in the "children" list of both of its parents and only the "parent"
-                            // of one of them. Which one is unknown because it will visually move only
-                            // to move back after some action is done. Cycling the deck then deletes all
-                            // of the entities but because the completed stack still has it has its child
-                            // it will
-                            //
-                            // I think the next thing to try is to change clickable/draggable
-                            // to work the same way that the bevy_ui Interaction does
-                            // so we can just query for Query<&Interaction, Change<Interaction>>
-                            // and the interactions can be Hovered, Clicked, Released, StartDragging, Dragging, Dropped
                             let target = top_entity(stack_entity, &q_children);
                             let target_card = q_card.get(target).ok().map(|(c, _, _)| c);
-                            // let target_stack = q_stacks.get(target).unwrap().1;
-                            // This assertion catches some cases where things are just off
-                            // assert_eq!(target_stack.kind, stack.kind);
                             if stack.can_stack(target_card, *card, false) {
-                                if let Ok(parent) = q_parent.get(clicked.0) {
-                                    commands.entity(parent.0).remove_children(&[clicked.0]);
-                                    // commands.entity(parent.0).remove::<Children>();
+                                if let Ok(parent) = q_parent.get(*entity) {
+                                    commands.entity(parent.0).remove_children(&[*entity]);
+                                    if let Ok((_, CardFace::Down, _)) = q_card.get(parent.0) {
+                                        commands.entity(parent.0)
+                                                    .insert(CardFace::Up)
+                                                    .insert(Draggable);
+                                    }
                                 }
-                                move_cards.send(MoveCard::new(clicked.0, target));
-                                // commands.entity(target).add_child(clicked.0);
-                                // commands.entity(target).insert(Children::with(&[clicked.0]));
-                                // // This right here can somehow be the wrong stack...
-                                // commands.entity(clicked.0).insert(Parent(target));
+                                commands.entity(target).add_child(*entity);
+                                let mut transform = q_transform.get_mut(*entity).unwrap();
+                                *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
                                 break
                             }
                         }
                     } else {
-                        commands.entity(clicked.0).insert(WasClicked(Timer::from_seconds(0.5, false)));
+                        commands.entity(*entity).insert(WasClicked(Timer::from_seconds(0.5, false)));
                     }
                 },
                 CardFace::Down => {
                     // TODO: Make this automatic
-                    // Clicked on a facedown card that has no children
-                    info!("Clicked face down card");
-                    if q_children.get(clicked.0).ok().map(|c| c.is_empty()).unwrap_or(true) {
-                        info!("  Flipping");
-                        // Flip the card
-                        commands.entity(clicked.0).insert(CardFace::Up).insert(Draggable);
-                    } else {
-                        info!("  But it had children: {:?} ({:?})", q_children.get(clicked.0), q_stacks.get(clicked.0));
+                    let has_children = q_children.get(*entity).ok().map(|c| !c.is_empty()).unwrap_or(false);
+                    if !has_children {
+                        commands.entity(*entity)
+                                    .insert(CardFace::Up)
+                                    .insert(Draggable);
                     }
                 }
             }
@@ -1276,23 +1018,65 @@ fn clicked_system(
     }
 }
 
-fn card_move_system(mut commands: Commands, card_texture: Res<CardsTextureHandle>, mut move_cards: EventReader<MoveCard>, card: Query<&Card>) {
-    for event in move_cards.iter() {
-        commands.entity(event.to)
-            .with_children(|parent| {
-                parent.spawn_bundle(SpriteSheetBundle {
-                    texture_atlas: card_texture.0.clone(),
-                    transform: Transform::from_xyz(0.0, -CARD_STACK_SPACE, 1.0),
-                    ..Default::default()
-                })
-                .insert(card.get(event.target).unwrap().clone())
-                .insert(CardFace::Up)
-                .insert(Clickable::default())
-                .insert(Draggable);
-        });
-        commands.entity(event.target).despawn();
+fn drop_system(
+    mut commands: Commands,
+    mut ev_dropped: EventReader<Dropped>,
+    q_droppable: Query<(Entity, &Droppable)>,
+    q_children: Query<&Children>,
+    q_parent: Query<&Parent>,
+    q_card: Query<&Card>,
+    q_card_face: Query<&CardFace>,
+    q_stack: Query<&Stack>,
+    mut q_transform: Query<&mut Transform>,
+) {
+    for Dropped(dropped, local_start_pos, mouse_position) in ev_dropped.iter() {
+        let mut was_dropped = false;
+        for (droppable_entity, droppable) in q_droppable.iter() {
+            if droppable.zone.contains(*mouse_position) {
+                // Find the bottom of the drop stack
+                let top_entity = top_entity(droppable_entity, &q_children);
+                // If the entity is not a card we will get None
+                let top_card = q_card.get(top_entity).ok();
+                let stack = q_stack.get(droppable_entity).unwrap();
+                // If we are not dragging a card this will fail
+                let dropped_card = q_card.get(*dropped).unwrap();
+                let has_children = q_children.get(*dropped).ok().map(|c| !c.is_empty()).unwrap_or(false);
+                if stack.can_stack(top_card, *dropped_card, has_children) {
+                    if let Ok(parent) = q_parent.get(*dropped) {
+                        commands.entity(parent.0).remove_children(&[*dropped]);
+                        if let Ok(CardFace::Down) = q_card_face.get(parent.0) {
+                            commands.entity(parent.0)
+                                        .insert(CardFace::Up)
+                                        .insert(Draggable);
+                        }
+                    }
+                    commands.entity(top_entity).add_child(*dropped);
+                    let mut transform = q_transform.get_mut(*dropped).unwrap();
+                    *transform.translation = *match stack.kind {
+                        StackKind::Stack => {
+                            if top_card.is_some() {
+                                Vec3::new(0.0, -CARD_STACK_SPACE, 1.0)
+                            } else {
+                                Vec3::new(0.0, 0.0, 1.0)
+                            }
+                        },
+                        StackKind::Ordered(_) => {
+                            Vec3::new(0.0, 0.0, 1.0)
+                        }
+                    };
+                    was_dropped = true;
+                    break
+                }
+            }
+        }
+        if !was_dropped {
+            // Move back to the old position
+            let mut transform = q_transform.get_mut(*dropped).unwrap();
+            *transform.translation = **local_start_pos;
+        }
     }
 }
+
 
 fn walk(mut node: Option<Entity>, query: &Query<&Parent>, func: &mut dyn FnMut(Entity)) {
     while let Some(entity) = node {
@@ -1302,17 +1086,6 @@ fn walk(mut node: Option<Entity>, query: &Query<&Parent>, func: &mut dyn FnMut(E
         } else {
             None
         }
-    }
-}
-
-fn walk_children(mut node: Option<Entity>, query: &Query<&Children>, func: &mut dyn FnMut(Entity)) {
-    while let Some(entity) = node {
-        func(entity);
-        node = if let Ok(children) = query.get(entity) {
-            children.first().cloned()
-        } else {
-            None
-        };
     }
 }
 
