@@ -1279,9 +1279,9 @@ fn click_system(
                     }
                 },
                 CardFace::Down => {
-                    // This shouldn't ever happen since its done autoamtically
                     let has_children = q_children.get(*entity).ok().map(|c| !c.is_empty()).unwrap_or(false);
                     if !has_children {
+                        // This shouldn't ever happen since its done autoamtically
                         commands.entity(*entity)
                                     .insert(CardFace::Up)
                                     .insert(Draggable);
@@ -1302,11 +1302,14 @@ fn drop_system(
     q_card_face: Query<&CardFace>,
     q_stack: Query<&Stack>,
     mut q_transform: Query<&mut Transform>,
+    q_global_transform: Query<&GlobalTransform>,
 ) {
-    for Dropped(dropped, local_start_pos, mouse_position) in ev_dropped.iter() {
+    for Dropped(dropped, local_start_pos, _mouse_position) in ev_dropped.iter() {
+        let pos = q_global_transform.get(*dropped).unwrap().translation;
+        let pos = Vec2::new(pos.x, pos.y);
         let mut was_dropped = false;
         for (droppable_entity, droppable) in q_droppable.iter() {
-            if droppable.zone.contains(*mouse_position) {
+            if droppable.zone.contains(pos) {
                 // Find the bottom of the drop stack
                 let top_entity = top_entity(droppable_entity, &q_children);
                 // If the entity is not a card we will get None
