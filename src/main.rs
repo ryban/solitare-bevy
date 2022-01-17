@@ -118,7 +118,7 @@ struct Deck {
 }
 
 // XXX: Possibly change this to be a Card field instead of an individual component?
-#[derive(Debug, Clone, Copy, Component)]
+#[derive(Debug, Clone, Copy, PartialEq, Component)]
 enum CardFace {
     Down,
     Up,
@@ -175,13 +175,38 @@ impl Clickable {
 struct WinText;
 
 #[derive(Component)]
-struct ResetButton;
+enum MenuButton {
+    Play,
+    Draw1,
+    Draw3
+}
 
-// #[derive(Debug)]
-// enum DrawMode {
-//     Draw1,
-//     Draw3,
-// }
+#[derive(Component)]
+struct MenuRoot;
+
+#[derive(Component)]
+enum ResetButton {
+    Draw1,
+    Draw3,
+}
+
+#[derive(Component)]
+struct ResetMenuRoot;
+
+#[derive(Debug, PartialEq)]
+enum DrawMode {
+    Draw1,
+    Draw3,
+}
+
+impl DrawMode {
+    fn num(&self) -> usize {
+        match self {
+            DrawMode::Draw1 => 1,
+            DrawMode::Draw3 => 3,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Component, PartialEq)]
 enum MouseInteraction {
@@ -317,25 +342,36 @@ fn main() {
         })
         .add_plugins(DefaultPlugins)
         .insert_resource(ClearColor(Color::rgb(0.3, 0.7, 0.1)))
+        .insert_resource(DrawMode::Draw1)
         .add_state(GameState::Menu)
         .add_event::<Released>()
         .add_event::<Dropped>()
         .add_startup_system(setup)
+        .add_startup_system(setup_menu)
         .add_system_set(
             SystemSet::on_enter(GameState::Menu)
-                .with_system(setup_menu)
+                .with_system(show_menu)
         )
         .add_system_set(
             SystemSet::on_update(GameState::Menu)
                 .with_system(main_menu)
         )
         .add_system_set(
+            SystemSet::on_exit(GameState::Menu)
+                .with_system(hide_menu)
+        )
+        .add_system_set(
             SystemSet::on_enter(GameState::Shuffle)
+                .with_system(clean_cards)
                 .with_system(reset_cards)
         )
         .add_system_set(
             SystemSet::on_update(GameState::Playing)
                 .with_system(update_click_timers)
+                // Run this before the mouse system so the double click sets the translation to the
+                // completed pile rather than the discard pile resetting it
+                // It would nice to make this event based so its not running constantly anyways
+                .with_system(discard_update_system.before("mouse"))
                 .with_system(mouse_interaction_system.label("mouse"))
                 .with_system(click_system.after("mouse"))
                 .with_system(drop_system.after("mouse"))
@@ -344,19 +380,24 @@ fn main() {
                 .with_system(deck_update_system)
                 .with_system(debug_duplicate_children)
                 .with_system(reset_game_button)
+                .with_system(auto_win_system)
         )
         .add_system_set_to_stage(
             CoreStage::PreUpdate,
             SystemSet::new()
-                .with_system(clickable_bounds_update_system.system())
+                .with_system(clickable_bounds_update_system)
         )
         .add_system_set(
             SystemSet::on_enter(GameState::Won)
-                .with_system(spawn_win_text.system())
+                .with_system(spawn_win_screen)
         )
         .add_system_set(
             SystemSet::on_update(GameState::Won)
-                .with_system(won_screen.system())
+                .with_system(win_screen)
+        )
+        .add_system_set(
+            SystemSet::on_exit(GameState::Won)
+                .with_system(clean_cards)
         )
         .run();
 }
@@ -383,9 +424,9 @@ fn setup(
     commands.insert_resource(CardsTextureHandle(card_atlas_handle.clone()));
 
     commands
-        .spawn_bundle(ButtonBundle {
+        .spawn_bundle(NodeBundle {
             style: Style {
-                size: Size::new(Val::Px(50.0), Val::Px(20.0)),
+                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
                 display: Display::None,
                 margin: Rect {
                     bottom: Val::Px(5.0),
@@ -393,31 +434,86 @@ fn setup(
                     top: Val::Auto,
                     right: Val::Auto,
                 },
-                // horizontally center child text
-                justify_content: JustifyContent::Center,
-                // vertically center child text
-                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexStart,
+                align_content: AlignContent::FlexStart,
                 ..Default::default()
             },
-            color: Color::rgb(0.15, 0.15, 0.15).into(),
+            color: Color::NONE.into(),
             ..Default::default()
         })
+        .insert(ResetMenuRoot)
         .with_children(|parent| {
-            parent.spawn_bundle(TextBundle {
-                text: Text::with_section(
-                    "Reset",
-                    TextStyle {
-                        font: font_handle.clone(),
-                        font_size: 20.0,
-                        color: Color::rgb(0.9, 0.9, 0.9),
+            parent.spawn_bundle(ButtonBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(150.0), Val::Px(20.0)),
+                        margin: Rect {
+                            right: Val::Px(5.0),
+                            ..Default::default()
+                        },
+                        // horizontally center child text
+                        justify_content: JustifyContent::Center,
+                        // vertically center child text
+                        align_items: AlignItems::Center,
+                        ..Default::default()
                     },
-                    Default::default(),
-                ),
-                ..Default::default()
-            })
-            .insert(ResetButton);
-        })
-        .insert(ResetButton);
+                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    ..Default::default()
+                })
+                .insert(ResetButton::Draw1)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            "New Single Draw",
+                            TextStyle {
+                                font: font_handle.clone(),
+                                font_size: 20.0,
+                                color: Color::rgb(0.9, 0.9, 0.9),
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
+
+            parent.spawn_bundle(ButtonBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(150.0), Val::Px(20.0)),
+                        margin: Rect {
+                            left: Val::Px(5.0),
+                            ..Default::default()
+                        },
+                        // horizontally center child text
+                        justify_content: JustifyContent::Center,
+                        // vertically center child text
+                        align_items: AlignItems::Center,
+                        ..Default::default()
+                    },
+                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    ..Default::default()
+                })
+                .insert(ResetButton::Draw3)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            "New Triple Draw",
+                            TextStyle {
+                                font: font_handle.clone(),
+                                font_size: 20.0,
+                                color: Color::rgb(0.9, 0.9, 0.9),
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
+        });
+}
+
+fn clean_cards(mut commands: Commands, cleanup: Query<Entity, Or<(With<Card>, With<Stack>, With<Deck>, With<DiscardPile>)>>) {
+    for entity in cleanup.iter() {
+        commands.entity(entity).despawn_recursive();
+    }
+
 }
 
 fn reset_cards(
@@ -425,13 +521,8 @@ fn reset_cards(
     mut game_state: ResMut<State<GameState>>,
     card_texture: Res<CardsTextureHandle>,
     window: Res<WindowDescriptor>,
-    cleanup: Query<Entity, Or<(With<Card>, With<Stack>, With<Deck>, With<DiscardPile>)>>,
-    mut reset_button: Query<&mut Style, With<ResetButton>>
+    mut reset_menu: Query<&mut Style, With<ResetMenuRoot>>
 ) {
-    for entity in cleanup.iter() {
-        commands.entity(entity).despawn_recursive();
-    }
-
     let mut rng = rand::thread_rng();
     let mut deck = Vec::new();
     for suit in [Suit::Spades, Suit::Clubs, Suit::Hearts, Suit::Diamonds] {
@@ -566,66 +657,200 @@ fn reset_cards(
         .insert(Droppable {zone: Area::new(stack_pos.x - CARD_WIDTH / 2.0, stack_pos.y - CARD_HEIGHT / 2.0, CARD_WIDTH, CARD_HEIGHT)});
     }
 
-    for mut style in reset_button.iter_mut() {
+    for mut style in reset_menu.iter_mut() {
         style.display = Display::Flex;
     }
 
     game_state.set(GameState::Playing).unwrap();
 }
 
-fn setup_menu(mut commands: Commands, font: Res<FontHandle>, mut reset_button: Query<&mut Style, With<ResetButton>>) {
+fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut reset_menu: Query<&mut Style, With<ResetMenuRoot>>) {
+    let font_handle = asset_server.load("fonts/FiraSans-Bold.ttf");
+
     commands
-        .spawn_bundle(ButtonBundle {
+        .spawn_bundle(NodeBundle {
             style: Style {
-                size: Size::new(Val::Px(150.0), Val::Px(65.0)),
-                // center button
-                margin: Rect::all(Val::Auto),
-                // horizontally center child text
+                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
+                flex_direction: FlexDirection::ColumnReverse,
                 justify_content: JustifyContent::Center,
-                // vertically center child text
-                align_items: AlignItems::Center,
+                align_content: AlignContent::Center,
                 ..Default::default()
             },
-            color: Color::rgb(0.15, 0.15, 0.15).into(),
+            color: Color::NONE.into(),
             ..Default::default()
         })
+        .insert(MenuRoot)
         .with_children(|parent| {
-            parent.spawn_bundle(TextBundle {
-                text: Text::with_section(
-                    "Play",
-                    TextStyle {
-                        font: font.0.clone(),
-                        font_size: 40.0,
-                        color: Color::rgb(0.9, 0.9, 0.9),
+            parent
+                .spawn_bundle(ButtonBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(175.0), Val::Px(65.0)),
+                        margin: Rect {
+                            left: Val::Auto,
+                            right: Val::Auto,
+                            top: Val::Auto,
+                            bottom: Val::Px(10.0),
+                        },
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..Default::default()
                     },
-                    Default::default(),
-                ),
-                ..Default::default()
-            });
+                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    ..Default::default()
+                })
+                .insert(MenuButton::Play)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            "Play",
+                            TextStyle {
+                                font: font_handle.clone(),
+                                font_size: 40.0,
+                                color: Color::rgb(0.9, 0.9, 0.9),
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
+            parent
+                .spawn_bundle(ButtonBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(175.0), Val::Px(65.0)),
+                        margin: Rect {
+                            top: Val::Px(1.0),
+                            bottom: Val::Px(1.0),
+                            left: Val::Auto,
+                            right: Val::Auto,
+                        },
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..Default::default()
+                    },
+                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    ..Default::default()
+                })
+                .insert(MenuButton::Draw1)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            "Draw One",
+                            TextStyle {
+                                font: font_handle.clone(),
+                                font_size: 40.0,
+                                color: Color::rgb(0.9, 0.9, 0.9),
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
+            parent
+                .spawn_bundle(ButtonBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(175.0), Val::Px(65.0)),
+                        margin: Rect {
+                            top: Val::Px(1.0),
+                            bottom: Val::Auto,
+                            left: Val::Auto,
+                            right: Val::Auto,
+                        },
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..Default::default()
+                    },
+                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    ..Default::default()
+                })
+                .insert(MenuButton::Draw3)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            "Draw Three",
+                            TextStyle {
+                                font: font_handle.clone(),
+                                font_size: 40.0,
+                                color: Color::rgb(0.9, 0.9, 0.9),
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
         });
 
-    for mut style in reset_button.iter_mut() {
+    for mut style in reset_menu.iter_mut() {
+        style.display = Display::None;
+    }
+}
+
+fn auto_win_system(mut game_state: ResMut<State<GameState>>, keyboard: Res<Input<KeyCode>>) {
+    if keyboard.just_pressed(KeyCode::Space) {
+        game_state.set(GameState::Won).unwrap()
+    }
+}
+
+
+fn show_menu(mut menu_root: Query<&mut Style, With<MenuRoot>>) {
+    for mut style in menu_root.iter_mut() {
+        style.display = Display::Flex;
+    }
+}
+
+fn hide_menu(mut menu_root: Query<&mut Style, With<MenuRoot>>) {
+    for mut style in menu_root.iter_mut() {
         style.display = Display::None;
     }
 }
 
 fn main_menu(
-    mut commands: Commands,
+    mut draw_mode: ResMut<DrawMode>,
     mut game_state: ResMut<State<GameState>>,
-    interaction_query: Query<(Entity, &Interaction), (Changed<Interaction>, With<Button>)>
+    interaction_query: Query<(&MenuButton, &Interaction), Changed<Interaction>>,
+    mut q_buttons: Query<(&MenuButton, &mut UiColor)>,
 ) {
-    for (entity, interaction) in interaction_query.iter() {
+    for (button, interaction) in interaction_query.iter() {
         match *interaction {
             Interaction::Clicked => {
-                game_state.set(GameState::Shuffle).unwrap();
-                commands.entity(entity).despawn_recursive();
+                match button {
+                    MenuButton::Play => {
+                        game_state.set(GameState::Shuffle).unwrap();
+                    },
+                    MenuButton::Draw1 => {
+                        *draw_mode = DrawMode::Draw1;
+                    },
+                    MenuButton::Draw3 => {
+                        *draw_mode = DrawMode::Draw3;
+                    },
+                }
             },
             _ => {},
         }
     }
+    if draw_mode.is_changed() {
+        for (button, mut color) in q_buttons.iter_mut() {
+            match button {
+                MenuButton::Draw1 => {
+                    if *draw_mode == DrawMode::Draw1 {
+                        *color = Color::rgb(0.15, 0.15, 0.15).into();
+                    } else {
+                        *color = Color::rgb(0.5, 0.5, 0.5).into();
+                    }
+                },
+                MenuButton::Draw3 => {
+                    if *draw_mode == DrawMode::Draw3 {
+                        *color = Color::rgb(0.15, 0.15, 0.15).into();
+                    } else {
+                        *color = Color::rgb(0.5, 0.5, 0.5).into();
+                    }
+                },
+                MenuButton::Play => {},
+            }
+        }
+    }
 }
 
-fn won_screen(
+fn win_screen(
     mut commands: Commands,
     mut game_state: ResMut<State<GameState>>,
     interaction_query: Query<(Entity, &Interaction), (Changed<Interaction>, With<Button>)>,
@@ -635,7 +860,7 @@ fn won_screen(
     for (entity, interaction) in interaction_query.iter() {
         match *interaction {
             Interaction::Clicked => {
-                game_state.set(GameState::Shuffle).unwrap();
+                game_state.set(GameState::Menu).unwrap();
                 commands.entity(entity).despawn_recursive();
                 for e in win_text.iter() {
                     commands.entity(e).despawn_recursive();
@@ -648,11 +873,20 @@ fn won_screen(
 
 fn reset_game_button(
     mut game_state: ResMut<State<GameState>>,
-    interaction_query: Query<&Interaction, (Changed<Interaction>, With<Button>, With<ResetButton>)>,
+    mut draw_mode: ResMut<DrawMode>,
+    interaction_query: Query<(&Interaction, &ResetButton), (Changed<Interaction>, With<Button>)>,
 ) {
-    for interaction in interaction_query.iter() {
+    for (interaction, button) in interaction_query.iter() {
         match *interaction {
             Interaction::Clicked => {
+                match button {
+                    ResetButton::Draw1 => {
+                        *draw_mode = DrawMode::Draw1;
+                    },
+                    ResetButton::Draw3 => {
+                        *draw_mode = DrawMode::Draw3;
+                    },
+                }
                 game_state.set(GameState::Shuffle).unwrap();
             },
             _ => {},
@@ -681,11 +915,11 @@ fn debug_duplicate_children(keys: Res<Input<KeyCode>>, q_children: Query<(Entity
     }
 }
 
-fn spawn_win_text(
+fn spawn_win_screen(
     mut commands: Commands,
     windows: Res<Windows>,
     font: Res<FontHandle>,
-    mut reset_button: Query<&mut Style, With<ResetButton>>,
+    mut reset_menu: Query<&mut Style, With<ResetMenuRoot>>,
 ) {
     let window = windows.get_primary().unwrap();
     commands.spawn_bundle(Text2dBundle {
@@ -760,7 +994,7 @@ fn spawn_win_text(
             });
         });
 
-    for mut style in reset_button.iter_mut() {
+    for mut style in reset_menu.iter_mut() {
         style.display = Display::None;
     }
 }
@@ -768,6 +1002,31 @@ fn spawn_win_text(
 fn deck_update_system(mut decks: Query<(&Deck, &mut Visibility), Changed<Deck>>) {
     for (deck, mut visible) in decks.iter_mut() {
         visible.is_visible = deck.cards.len() > 0;
+    }
+}
+
+fn discard_update_system(
+    q_discard: Query<Entity, With<DiscardPile>>,
+    q_children: Query<&Children>,
+    mut q_transform: Query<&mut Transform>,
+    q_interaction: Query<&MouseInteraction>,
+) {
+    let discard = q_discard.single();
+    let first_child = q_children.get(discard).ok().map(|children| children.first()).flatten().cloned();
+    let mut children = Vec::new();
+    walk_children(first_child, &q_children, &mut |child| children.push(child));
+
+    for (i, child) in children.iter().rev().enumerate() {
+        if q_interaction.get(*child).ok().map(|interaction| interaction.is_dragging()).unwrap_or(false) {
+            continue
+        }
+        if i < 2 && Some(*child) != first_child {
+            let mut transform = q_transform.get_mut(*child).unwrap();
+            *transform.translation = *Vec3::new(CARD_STACK_SPACE, 0.0, 1.0);
+        } else {
+            let mut transform = q_transform.get_mut(*child).unwrap();
+            *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
+        }
     }
 }
 
@@ -921,6 +1180,7 @@ fn mouse_interaction_system(
 
 fn click_system(
     mut commands: Commands,
+    draw_mode: ResMut<DrawMode>,
     mut ev_released: EventReader<Released>,
     card_texture: Res<CardsTextureHandle>,
     q_card: Query<(&Card, &CardFace, Option<&WasClicked>)>,
@@ -934,43 +1194,55 @@ fn click_system(
 ) {
     for Released(entity, _offset) in ev_released.iter() {
         if let Ok(mut deck) = q_deck.get_mut(*entity) {
-            match deck.cards.pop() {
-                Some(card) => {
-                    let discard = q_discard.single();
-                    let discard_positon = q_gtransform.get(discard).unwrap();
-                    let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
-                    let top = top_entity(discard, &q_children);
-                    let new = commands.spawn_bundle(SpriteSheetBundle {
-                                            texture_atlas: card_texture.0.clone(),
-                                            transform: Transform::from_xyz(0.0, 0.0, 1.0),
-                                            ..Default::default()
-                                        })
-                                        .insert(card)
-                                        .insert(CardFace::Up)
-                                        .insert(Clickable::at(click_position))
-                                        .insert(Draggable)
-                                        .id();
-                    commands.entity(top).add_child(new);
-                },
-                None => {
-                    let discard = q_discard.single();
-                    let top = top_entity(discard, &q_children);
-                    let top = if top == discard {
-                        None
-                    } else {
-                        Some(top)
-                    };
-                    walk(top, &q_parent, &mut |entity| {
-                        if let Ok((card, _, _)) = q_card.get(entity) {
-                            deck.cards.push(*card);
-                        }
-                    });
-                    if let Ok(children) = q_children.get(discard) {
-                        for child in children.iter() {
-                            commands.entity(*child).despawn_recursive();
+            if deck.cards.len() == 0 {
+                let discard = q_discard.single();
+                let top = top_entity(discard, &q_children);
+                let top = if top == discard {
+                    None
+                } else {
+                    Some(top)
+                };
+                walk(top, &q_parent, &mut |entity| {
+                    if let Ok((card, _, _)) = q_card.get(entity) {
+                        deck.cards.push(*card);
+                    }
+                });
+                if let Ok(children) = q_children.get(discard) {
+                    for child in children.iter() {
+                        commands.entity(*child).despawn_recursive();
+                    }
+                }
+            } else {
+                let discard = q_discard.single();
+                let discard_positon = q_gtransform.get(discard).unwrap();
+                let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                let mut top = top_entity(discard, &q_children);
+                if top != discard {
+                    // Make the current top card undraggable
+                    commands.entity(top).remove::<Draggable>();
+                }
+                for _ in 0..draw_mode.num() {
+                    match deck.cards.pop() {
+                        Some(card) => {
+                            let new = commands.spawn_bundle(SpriteSheetBundle {
+                                                    texture_atlas: card_texture.0.clone(),
+                                                    transform: Transform::from_xyz(0.0, 0.0, 1.0),
+                                                    ..Default::default()
+                                                })
+                                                .insert(card)
+                                                .insert(CardFace::Up)
+                                                .insert(Clickable::at(click_position))
+                                                .id();
+                            commands.entity(top).add_child(new);
+                            top = new;
+                        },
+                        None => {
+                            break
                         }
                     }
                 }
+                // Make the current new top card draggable
+                commands.entity(top).insert(Draggable);
             }
             continue
         }
@@ -978,7 +1250,7 @@ fn click_system(
         if let Ok((card, face, maybe_clicked)) = q_card.get(*entity) {
             match face {
                 CardFace::Up => {
-                    let has_children = false;
+                    let has_children = q_children.get(*entity).ok().map(|c| !c.is_empty()).unwrap_or(false);
                     if maybe_clicked.is_some() && !has_children {
                         // double click
                         commands.entity(*entity).remove::<WasClicked>();
@@ -988,10 +1260,12 @@ fn click_system(
                             if stack.can_stack(target_card, *card, false) {
                                 if let Ok(parent) = q_parent.get(*entity) {
                                     commands.entity(parent.0).remove_children(&[*entity]);
-                                    if let Ok((_, CardFace::Down, _)) = q_card.get(parent.0) {
-                                        commands.entity(parent.0)
-                                                    .insert(CardFace::Up)
-                                                    .insert(Draggable);
+                                    if let Ok((_, face, _)) = q_card.get(parent.0) {
+                                        commands.entity(parent.0).insert(Draggable);
+                                        if face == &CardFace::Down {
+                                            commands.entity(parent.0)
+                                                        .insert(CardFace::Up);
+                                        }
                                     }
                                 }
                                 commands.entity(target).add_child(*entity);
@@ -1005,7 +1279,7 @@ fn click_system(
                     }
                 },
                 CardFace::Down => {
-                    // TODO: Make this automatic
+                    // This shouldn't ever happen since its done autoamtically
                     let has_children = q_children.get(*entity).ok().map(|c| !c.is_empty()).unwrap_or(false);
                     if !has_children {
                         commands.entity(*entity)
@@ -1044,10 +1318,12 @@ fn drop_system(
                 if stack.can_stack(top_card, *dropped_card, has_children) {
                     if let Ok(parent) = q_parent.get(*dropped) {
                         commands.entity(parent.0).remove_children(&[*dropped]);
-                        if let Ok(CardFace::Down) = q_card_face.get(parent.0) {
-                            commands.entity(parent.0)
-                                        .insert(CardFace::Up)
-                                        .insert(Draggable);
+                        if let Ok(face) = q_card_face.get(parent.0) {
+                            // Make the new stack top draggable
+                            commands.entity(parent.0).insert(Draggable);
+                            if face == &CardFace::Down {
+                                commands.entity(parent.0).insert(CardFace::Up);
+                            }
                         }
                     }
                     commands.entity(top_entity).add_child(*dropped);
@@ -1086,6 +1362,17 @@ fn walk(mut node: Option<Entity>, query: &Query<&Parent>, func: &mut dyn FnMut(E
         } else {
             None
         }
+    }
+}
+
+fn walk_children(mut node: Option<Entity>, query: &Query<&Children>, func: &mut dyn FnMut(Entity)) {
+    while let Some(entity) = node {
+        func(entity);
+        node = if let Ok(children) = query.get(entity) {
+            children.first().cloned()
+        } else {
+            None
+        };
     }
 }
 
