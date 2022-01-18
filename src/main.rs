@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::time::Duration;
 use bevy::prelude::*;
 use bevy::render::camera::{WindowOrigin, ScalingMode};
 use bevy::render::view::Visibility;
 use bevy::input::{keyboard::KeyCode, Input, mouse::MouseMotion};
 use bevy::ui::Display;
+use bevy_easings::*;
 // use bevy_easings::*;
 use rand::prelude::*;
 
@@ -341,6 +343,7 @@ fn main() {
             ..Default::default()
         })
         .add_plugins(DefaultPlugins)
+        .add_plugin(EasingsPlugin)
         .insert_resource(ClearColor(Color::rgb(0.3, 0.7, 0.1)))
         .insert_resource(DrawMode::Draw1)
         .add_state(GameState::Menu)
@@ -380,7 +383,6 @@ fn main() {
                 .with_system(deck_update_system)
                 .with_system(debug_duplicate_children)
                 .with_system(reset_game_button)
-                .with_system(auto_win_system)
         )
         .add_system_set_to_stage(
             CoreStage::PreUpdate,
@@ -784,13 +786,6 @@ fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut reset_
     }
 }
 
-fn auto_win_system(mut game_state: ResMut<State<GameState>>, keyboard: Res<Input<KeyCode>>) {
-    if keyboard.just_pressed(KeyCode::Space) {
-        game_state.set(GameState::Won).unwrap()
-    }
-}
-
-
 fn show_menu(mut menu_root: Query<&mut Style, With<MenuRoot>>) {
     for mut style in menu_root.iter_mut() {
         style.display = Display::Flex;
@@ -1190,7 +1185,6 @@ fn click_system(
     q_stacks: Query<(Entity, &Stack)>,
     q_discard: Query<Entity, With<DiscardPile>>,
     q_gtransform: Query<&GlobalTransform>,
-    mut q_transform: Query<&mut Transform>,
 ) {
     for Released(entity, _offset) in ev_released.iter() {
         if let Ok(mut deck) = q_deck.get_mut(*entity) {
@@ -1269,8 +1263,26 @@ fn click_system(
                                     }
                                 }
                                 commands.entity(target).add_child(*entity);
-                                let mut transform = q_transform.get_mut(*entity).unwrap();
-                                *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
+                                let target_pos = q_gtransform.get(target).unwrap().translation;
+                                let cur_pos = q_gtransform.get(*entity).unwrap().translation;
+                                let start_pos = cur_pos - target_pos;
+                                let end_pos = Transform::from_xyz(0.0, 0.0, 100.0);
+                                commands
+                                    .entity(*entity)
+                                        .insert(
+                                            Transform::from_translation(start_pos)
+                                                .ease_to(
+                                                    end_pos,
+                                                    EaseFunction::QuadraticIn,
+                                                    EasingType::Once {duration: Duration::from_millis(100)}
+                                                )
+                                                // this will keep the card above all of the others until it reaches the final position
+                                                .ease_to(
+                                                    Transform::from_xyz(0.0, 0.0, 1.0),
+                                                    EaseFunction::QuadraticIn,
+                                                    EasingType::Once {duration: Duration::from_millis(0)}
+                                                )
+                                        );
                                 break
                             }
                         }
@@ -1305,8 +1317,8 @@ fn drop_system(
     q_global_transform: Query<&GlobalTransform>,
 ) {
     for Dropped(dropped, local_start_pos, _mouse_position) in ev_dropped.iter() {
-        let pos = q_global_transform.get(*dropped).unwrap().translation;
-        let pos = Vec2::new(pos.x, pos.y);
+        let pos3 = q_global_transform.get(*dropped).unwrap().translation;
+        let pos = Vec2::new(pos3.x, pos3.y);
         let mut was_dropped = false;
         for (droppable_entity, droppable) in q_droppable.iter() {
             if droppable.zone.contains(pos) {
@@ -1330,19 +1342,30 @@ fn drop_system(
                         }
                     }
                     commands.entity(top_entity).add_child(*dropped);
-                    let mut transform = q_transform.get_mut(*dropped).unwrap();
-                    *transform.translation = *match stack.kind {
+                    let target_pos = q_global_transform.get(top_entity).unwrap().translation;
+                    let start_pos = pos3 - target_pos;
+                    let end_pos = match stack.kind {
                         StackKind::Stack => {
                             if top_card.is_some() {
-                                Vec3::new(0.0, -CARD_STACK_SPACE, 1.0)
+                                Transform::from_xyz(0.0, -CARD_STACK_SPACE, 1.0)
                             } else {
-                                Vec3::new(0.0, 0.0, 1.0)
+                                Transform::from_xyz(0.0, 0.0, 1.0)
                             }
                         },
                         StackKind::Ordered(_) => {
-                            Vec3::new(0.0, 0.0, 1.0)
+                            Transform::from_xyz(0.0, 0.0, 1.0)
                         }
                     };
+                    commands
+                        .entity(*dropped)
+                            .insert(
+                                Transform::from_translation(start_pos)
+                                .ease_to(
+                                    end_pos,
+                                    EaseFunction::QuadraticIn,
+                                    EasingType::Once {duration: Duration::from_millis(50)}
+                                )
+                            );
                     was_dropped = true;
                     break
                 }
@@ -1350,8 +1373,17 @@ fn drop_system(
         }
         if !was_dropped {
             // Move back to the old position
-            let mut transform = q_transform.get_mut(*dropped).unwrap();
-            *transform.translation = **local_start_pos;
+            let transform = q_transform.get_mut(*dropped).unwrap();
+            commands
+                .entity(*dropped)
+                    .insert(
+                        transform
+                            .ease_to(
+                                Transform::from_translation(*local_start_pos),
+                                EaseFunction::QuadraticIn,
+                                EasingType::Once {duration: Duration::from_millis(50)}
+                            )
+                    );
         }
     }
 }
