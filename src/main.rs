@@ -1185,6 +1185,7 @@ fn click_system(
     q_stacks: Query<(Entity, &Stack)>,
     q_discard: Query<Entity, With<DiscardPile>>,
     q_gtransform: Query<&GlobalTransform>,
+    mut q_transform: Query<&mut Transform>,
 ) {
     for Released(entity, _offset) in ev_released.iter() {
         if let Ok(mut deck) = q_deck.get_mut(*entity) {
@@ -1265,8 +1266,12 @@ fn click_system(
                                 commands.entity(target).add_child(*entity);
                                 let target_pos = q_gtransform.get(target).unwrap().translation;
                                 let cur_pos = q_gtransform.get(*entity).unwrap().translation;
-                                let start_pos = cur_pos - target_pos;
-                                let end_pos = Transform::from_xyz(0.0, 0.0, 100.0);
+                                let mut start_pos = cur_pos - target_pos;
+                                start_pos.z = 250.0;
+                                let end_pos = Transform::from_xyz(0.0, 0.0, 250.0);
+                                let mut cur_transform = q_transform.get_mut(*entity).unwrap();
+                                // immediately move to the parent relative start position to prevent occasional glitches
+                                *cur_transform.translation = *start_pos;
                                 commands
                                     .entity(*entity)
                                         .insert(
@@ -1280,7 +1285,7 @@ fn click_system(
                                                 .ease_to(
                                                     Transform::from_xyz(0.0, 0.0, 1.0),
                                                     EaseFunction::QuadraticIn,
-                                                    EasingType::Once {duration: Duration::from_millis(0)}
+                                                    EasingType::Once {duration: Duration::from_millis(1)}
                                                 )
                                         );
                                 break
