@@ -19,7 +19,7 @@ const CARD_WIDTH: f32 = 140.0;
 const CARD_HEIGHT: f32 = 190.0;
 const CARD_STACK_SPACE: f32 = 35.0;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Suit {
     Spades,
     Clubs,
@@ -262,6 +262,9 @@ struct LeftClicked(Vec2);
 #[derive(Debug, Component)]
 struct WasClicked(Timer);
 
+#[derive(Debug)]
+struct SolveTimer(Timer);
+
 // TODO: Also put the old Transform in here
 // to more easilly reset the position when its dropped
 #[derive(Debug, Component, Default)]
@@ -328,6 +331,7 @@ struct FontHandle(Handle<Font>);
 enum GameState {
     Menu,
     Playing,
+    AutoSolving,
     Shuffle,
     Won,
 }
@@ -383,6 +387,10 @@ fn main() {
                 .with_system(deck_update_system)
                 .with_system(debug_duplicate_children)
                 .with_system(reset_game_button)
+        )
+        .add_system_set(
+            SystemSet::on_update(GameState::AutoSolving)
+                .with_system(auto_solver)
         )
         .add_system_set_to_stage(
             CoreStage::PreUpdate,
@@ -1025,11 +1033,19 @@ fn discard_update_system(
     }
 }
 
-fn win_check_system(mut game_state: ResMut<State<GameState>>, q_stacks: Query<(Entity, &Stack)>, q_card: Query<&Card>, q_children: Query<&Children>) {
+fn win_check_system(
+    mut commands: Commands,
+    mut game_state: ResMut<State<GameState>>,
+    q_stacks: Query<(Entity, &Stack)>,
+    q_card: Query<(&Card, &CardFace)>,
+    q_children: Query<&Children>,
+    q_deck: Query<&Deck>,
+    q_discard: Query<Entity, With<DiscardPile>>,
+) {
     let mut completed = 0;
     for (stack_entity, _) in q_stacks.iter().filter(|(_entity, stack)| match stack.kind {StackKind::Ordered(_) => true, _ => false}) {
         let top = top_entity(stack_entity, &q_children);
-        if let Ok(card) = q_card.get(top) {
+        if let Ok((card, _)) = q_card.get(top) {
             if card.kind == CardKind::King {
                 completed += 1;
             }
@@ -1038,10 +1054,70 @@ fn win_check_system(mut game_state: ResMut<State<GameState>>, q_stacks: Query<(E
     if completed == 4 {
         info!("Game Won!");
         game_state.set(GameState::Won).unwrap();
+    } else {
+        // The only place facedown cards will exist is on the board
+        if q_deck.single().cards.len() == 0 && q_card.iter().all(|(_, face)| face == &CardFace::Up) {
+            let discard = q_discard.single();
+            let top_discard = top_entity(discard, &q_children);
+            if discard == top_discard {
+                info!("Attempting to auto-solve");
+                commands.insert_resource(SolveTimer(Timer::from_seconds(0.15, true)));
+                game_state.set(GameState::AutoSolving).unwrap();
+            }
+        }
     }
+}
 
-    // TODO: Check if there are no cards in the deck/discard and all cards are face up we can trivially auto solve it
-    // Just change/push the state to a solve state and move the cards one at a time with an animation at like 1 every 50ms
+fn auto_solver(
+    mut commands: Commands,
+    mut game_state: ResMut<State<GameState>>,
+    mut solve_timer: ResMut<SolveTimer>,
+    time: Res<Time>,
+    q_stacks: Query<(Entity, &Stack)>,
+    q_card: Query<&Card>,
+    q_card_face: Query<&CardFace>,
+    q_children: Query<&Children>,
+    q_parent: Query<&Parent>,
+    q_gtransform: Query<&GlobalTransform>,
+    mut q_transform: Query<&mut Transform>,
+) {
+    if !solve_timer.0.tick(time.delta()).finished() {
+        return
+    }
+    let mut stacks = HashMap::new();
+    let mut to_solve = Vec::new();
+    for (stack_entity, stack) in q_stacks.iter() {
+        let top = top_entity(stack_entity, &q_children);
+        match stack.kind {
+            StackKind::Ordered(suit) => {
+                let card = q_card.get(top).ok();
+                assert!(stacks.insert(suit, (top, card)).is_none());
+            },
+            StackKind::Stack => {
+                if top != stack_entity {
+                    let card = q_card.get(top).unwrap();
+                    to_solve.push((top, card))
+                }
+            }
+        }
+    }
+    if to_solve.len() == 0 {
+        // Just go back to playing and let the normal check logic set it for now to double check that is working
+        // This is will get stuck in a loop if its wrong, but it worked from the very beginning so...
+        game_state.set(GameState::Playing).unwrap();
+    }
+    // Always solve them lowest to highest
+    to_solve.sort_by_key(|(_, card)| card.kind.column());
+
+    for (candidate, card) in to_solve {
+        if let Some((top, maybe_top_card)) = stacks.get(&card.suit) {
+            let stack = Stack::new(StackKind::Ordered(card.suit));
+            if stack.can_stack(*maybe_top_card, *card, false) {
+                move_card(&mut commands, &q_parent, &q_gtransform, &mut q_transform, &q_card, &q_card_face, candidate, *top, 0.0, 100);
+                break
+            }
+        }
+    }
 }
 
 fn update_click_timers(mut commands: Commands, time: Res<Time>, mut timers: Query<(Entity, &mut WasClicked)>) {
@@ -1178,7 +1254,9 @@ fn click_system(
     draw_mode: ResMut<DrawMode>,
     mut ev_released: EventReader<Released>,
     card_texture: Res<CardsTextureHandle>,
-    q_card: Query<(&Card, &CardFace, Option<&WasClicked>)>,
+    q_card: Query<&Card>,
+    q_was_clicked: Query<&WasClicked>,
+    q_card_face: Query<&CardFace>,
     mut q_deck: Query<&mut Deck>,
     q_parent: Query<&Parent>,
     q_children: Query<&Children>,
@@ -1198,7 +1276,7 @@ fn click_system(
                     Some(top)
                 };
                 walk(top, &q_parent, &mut |entity| {
-                    if let Ok((card, _, _)) = q_card.get(entity) {
+                    if let Ok(card) = q_card.get(entity) {
                         deck.cards.push(*card);
                     }
                 });
@@ -1242,52 +1320,19 @@ fn click_system(
             continue
         }
 
-        if let Ok((card, face, maybe_clicked)) = q_card.get(*entity) {
+        if let Ok(card) = q_card.get(*entity) {
+            let face = q_card_face.get(*entity).unwrap();
             match face {
                 CardFace::Up => {
                     let has_children = q_children.get(*entity).ok().map(|c| !c.is_empty()).unwrap_or(false);
-                    if maybe_clicked.is_some() && !has_children {
+                    if q_was_clicked.get(*entity).is_ok() && !has_children {
                         // double click
                         commands.entity(*entity).remove::<WasClicked>();
                         if let Some((stack_entity, stack)) = q_stacks.iter().filter(|(_, stack)| stack.kind == StackKind::Ordered(card.suit)).nth(0) {
                             let target = top_entity(stack_entity, &q_children);
-                            let target_card = q_card.get(target).ok().map(|(c, _, _)| c);
+                            let target_card = q_card.get(target).ok();
                             if stack.can_stack(target_card, *card, false) {
-                                if let Ok(parent) = q_parent.get(*entity) {
-                                    commands.entity(parent.0).remove_children(&[*entity]);
-                                    if let Ok((_, face, _)) = q_card.get(parent.0) {
-                                        commands.entity(parent.0).insert(Draggable);
-                                        if face == &CardFace::Down {
-                                            commands.entity(parent.0)
-                                                        .insert(CardFace::Up);
-                                        }
-                                    }
-                                }
-                                commands.entity(target).add_child(*entity);
-                                let target_pos = q_gtransform.get(target).unwrap().translation;
-                                let cur_pos = q_gtransform.get(*entity).unwrap().translation;
-                                let mut start_pos = cur_pos - target_pos;
-                                start_pos.z = 250.0;
-                                let end_pos = Transform::from_xyz(0.0, 0.0, 250.0);
-                                let mut cur_transform = q_transform.get_mut(*entity).unwrap();
-                                // immediately move to the parent relative start position to prevent occasional glitches
-                                *cur_transform.translation = *start_pos;
-                                commands
-                                    .entity(*entity)
-                                        .insert(
-                                            Transform::from_translation(start_pos)
-                                                .ease_to(
-                                                    end_pos,
-                                                    EaseFunction::QuadraticIn,
-                                                    EasingType::Once {duration: Duration::from_millis(100)}
-                                                )
-                                                // this will keep the card above all of the others until it reaches the final position
-                                                .ease_to(
-                                                    Transform::from_xyz(0.0, 0.0, 1.0),
-                                                    EaseFunction::QuadraticIn,
-                                                    EasingType::Once {duration: Duration::from_millis(1)}
-                                                )
-                                        );
+                                move_card(&mut commands, &q_parent, &q_gtransform, &mut q_transform, &q_card, &q_card_face, *entity, target, 0.0, 100);
                                 break
                             }
                         }
@@ -1328,49 +1373,27 @@ fn drop_system(
         for (droppable_entity, droppable) in q_droppable.iter() {
             if droppable.zone.contains(pos) {
                 // Find the bottom of the drop stack
-                let top_entity = top_entity(droppable_entity, &q_children);
+                let top = top_entity(droppable_entity, &q_children);
                 // If the entity is not a card we will get None
-                let top_card = q_card.get(top_entity).ok();
+                let top_card = q_card.get(top).ok();
                 let stack = q_stack.get(droppable_entity).unwrap();
                 // If we are not dragging a card this will fail
                 let dropped_card = q_card.get(*dropped).unwrap();
                 let has_children = q_children.get(*dropped).ok().map(|c| !c.is_empty()).unwrap_or(false);
                 if stack.can_stack(top_card, *dropped_card, has_children) {
-                    if let Ok(parent) = q_parent.get(*dropped) {
-                        commands.entity(parent.0).remove_children(&[*dropped]);
-                        if let Ok(face) = q_card_face.get(parent.0) {
-                            // Make the new stack top draggable
-                            commands.entity(parent.0).insert(Draggable);
-                            if face == &CardFace::Down {
-                                commands.entity(parent.0).insert(CardFace::Up);
-                            }
-                        }
-                    }
-                    commands.entity(top_entity).add_child(*dropped);
-                    let target_pos = q_global_transform.get(top_entity).unwrap().translation;
-                    let start_pos = pos3 - target_pos;
-                    let end_pos = match stack.kind {
+                    let end_y = match stack.kind {
                         StackKind::Stack => {
                             if top_card.is_some() {
-                                Transform::from_xyz(0.0, -CARD_STACK_SPACE, 1.0)
+                                -CARD_STACK_SPACE
                             } else {
-                                Transform::from_xyz(0.0, 0.0, 1.0)
+                                0.0
                             }
                         },
                         StackKind::Ordered(_) => {
-                            Transform::from_xyz(0.0, 0.0, 1.0)
+                            0.0
                         }
                     };
-                    commands
-                        .entity(*dropped)
-                            .insert(
-                                Transform::from_translation(start_pos)
-                                .ease_to(
-                                    end_pos,
-                                    EaseFunction::QuadraticIn,
-                                    EasingType::Once {duration: Duration::from_millis(50)}
-                                )
-                            );
+                    move_card(&mut commands, &q_parent, &q_global_transform, &mut q_transform, &q_card, &q_card_face, *dropped, top, end_y, 50);
                     was_dropped = true;
                     break
                 }
@@ -1393,6 +1416,59 @@ fn drop_system(
     }
 }
 
+
+fn move_card(
+    commands: &mut Commands,
+    q_parent: &Query<&Parent>,
+    q_gtransform: &Query<&GlobalTransform>,
+    q_transform: &mut Query<&mut Transform>,
+    q_card: &Query<&Card>,
+    q_card_face: &Query<&CardFace>,
+    to_move: Entity,
+    new_parent: Entity,
+    final_y_offset: f32,
+    animation_time: u64,
+) {
+    if let Ok(parent) = q_parent.get(to_move) {
+        commands.entity(parent.0).remove_children(&[to_move]);
+        if let Ok(_) = q_card.get(parent.0) {
+            commands.entity(parent.0).insert(Draggable);
+            if let Ok(face) = q_card_face.get(parent.0) {
+                // Make the new stack top draggable
+                commands.entity(parent.0).insert(Draggable);
+                if face == &CardFace::Down {
+                    commands.entity(parent.0).insert(CardFace::Up);
+                }
+            }
+        }
+    }
+    commands.entity(new_parent).add_child(to_move);
+    let target_pos = q_gtransform.get(new_parent).unwrap().translation;
+    let cur_pos = q_gtransform.get(to_move).unwrap().translation;
+    let mut start_pos = cur_pos - target_pos;
+    start_pos.z = 250.0;
+    let end_pos = Transform::from_xyz(0.0, final_y_offset, 250.0);
+    let mut cur_transform = q_transform.get_mut(to_move).unwrap();
+    // immediately move to the parent relative start position to prevent occasional glitches
+    *cur_transform.translation = *start_pos;
+    commands
+        .entity(to_move)
+            .insert(
+                Transform::from_translation(start_pos)
+                    .ease_to(
+                        end_pos,
+                        EaseFunction::QuadraticIn,
+                        EasingType::Once {duration: Duration::from_millis(animation_time)}
+                    )
+                    // this will keep the card above all of the others until it reaches the final position
+                    .ease_to(
+                        Transform::from_xyz(0.0, final_y_offset, 1.0),
+                        EaseFunction::QuadraticIn,
+                        EasingType::Once {duration: Duration::from_millis(1)}
+                    )
+            );
+
+}
 
 fn walk(mut node: Option<Entity>, query: &Query<&Parent>, func: &mut dyn FnMut(Entity)) {
     while let Some(entity) = node {
