@@ -543,6 +543,10 @@ pub fn win_check_system(
     } else {
         // The only place facedown cards will exist is on the board
         if q_deck.single().cards.len() == 0 && q_card.iter().all(|(_, face)| face == &CardFace::Up) {
+            // This can fail because the discard deck is updated at the end of the frame
+            // while the actual deck can be updated immediately in its system so the deck
+            // can appear empty for a frame while cards are moved onto the discard pile
+            // Need to keep an actual discard vector... Or at the very least a counter
             let discard = q_discard.single();
             let top_discard = top_entity(discard, &q_children);
             if discard == top_discard {

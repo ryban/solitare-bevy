@@ -44,14 +44,17 @@ fn main() {
         .add_system_set(
             SystemSet::on_update(game::GameState::Playing)
                 .with_system(mouse_input::update_click_timers)
-                // Run this before the mouse system so the double click sets the translation to the
-                // completed pile rather than the discard pile resetting it
-                // It would nice to make this event based so its not running constantly anyways
-                .with_system(game::discard_update_system.before("mouse"))
+                // This is done before the mouse because the mouse can modify the deck to move cards from the deck to the discard
+                // If there is only 1 or 3 cards in the deck and no discard pile the win system will see it as a win this frame
+                // because the deck is empty but the new discard entities have not spawned yet.
+                .with_system(game::win_check_system.before("mouse"))
                 .with_system(mouse_input::mouse_interaction_system.label("mouse"))
                 .with_system(mouse_input::click_system.after("mouse"))
                 .with_system(mouse_input::drop_system.after("mouse"))
-                .with_system(game::win_check_system)
+                // Run this before the mouse system so the double click sets the translation to the
+                // completed pile rather than the discard pile resetting it
+                // It would nice to make this event based so its not running constantly anyways
+                .with_system(game::discard_update_system)
                 .with_system(game::card_texture_update_system)
                 .with_system(game::deck_update_system)
                 .with_system(menus::reset_game_button)
