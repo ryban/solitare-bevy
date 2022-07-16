@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_easings::*;
+use bevy::window::PresentMode;
 
 mod menus;
 mod mouse_input;
@@ -11,7 +12,7 @@ fn main() {
             title: "Solitaire".to_string(),
             width: 1280.,
             height: 960.,
-            vsync: true,
+            present_mode: PresentMode::Mailbox,
             resizable: false,
             ..Default::default()
         })
