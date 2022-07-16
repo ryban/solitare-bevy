@@ -19,7 +19,10 @@ use crate::game::{
     Area,
     move_card,
     top_entity,
+    bottom_entity,
     walk,
+    Action,
+    Actions,
 };
 
 #[derive(Debug, Component)]
@@ -91,14 +94,8 @@ pub struct Clicked(Entity, Vec2);
 #[derive(Debug, Clone)]
 pub struct Released(Entity, Vec2);
 
-#[derive(Debug, Clone, Component)]
-pub struct LeftClicked(Vec2);
-
 #[derive(Debug, Component)]
 pub struct WasClicked(Timer);
-
-#[derive(Debug, Component, Default)]
-pub struct Dragging(Vec2);
 
 #[derive(Debug, Component)]
 pub struct Draggable;
@@ -183,7 +180,7 @@ pub fn mouse_interaction_system(
                 }
             } else {
                 // This makes it hard to know when something stops being hovered, but don't really care about that though
-                // We only want to remove the component if the entity is not being dragged. Other wise moving the mouse very
+                // We only want to remove the component if the entity is not being dragged. Otherwise moving the mouse very
                 // quickly can cause the entity to stop being dragged
                 if q_interaction.get(entity).ok().map(|(_, interaction, _)| !interaction.is_dragging()).unwrap_or(false) {
                     commands.entity(entity).remove::<MouseInteraction>();
@@ -221,6 +218,7 @@ pub fn mouse_interaction_system(
 
 pub fn click_system(
     mut commands: Commands,
+    mut actions: ResMut<Actions>,
     draw_mode: ResMut<DrawMode>,
     mut ev_released: EventReader<Released>,
     card_texture: Res<CardsTextureHandle>,
@@ -255,6 +253,7 @@ pub fn click_system(
                         commands.entity(*child).despawn_recursive();
                     }
                 }
+                actions.0.push(Action::ResetDeck);
             } else {
                 let discard = q_discard.single();
                 let discard_positon = q_gtransform.get(discard).unwrap();
@@ -264,6 +263,8 @@ pub fn click_system(
                     // Make the current top card undraggable
                     commands.entity(top).remove::<Draggable>();
                 }
+                let num_drawn = deck.cards.len().min(draw_mode.num());
+                actions.0.push(Action::Draw(num_drawn));
                 for _ in 0..draw_mode.num() {
                     match deck.cards.pop() {
                         Some(card) => {
@@ -302,6 +303,16 @@ pub fn click_system(
                             let target = top_entity(stack_entity, &q_children);
                             let target_card = q_card.get(target).ok();
                             if stack.can_stack(target_card, *card, false) {
+                                // If we get in here the top card should always have a parent
+                                // However,
+                                // TODO: Handle the case where the dropped card was taken from the discard pile
+                                actions.0.push(Action::MoveCard {
+                                    card: card.clone(),
+                                    from: bottom_entity(*entity, &q_parent),
+                                    to: stack_entity,
+                                    y_offset: q_transform.get(*entity).map(|t| t.translation.y).unwrap_or(CARD_STACK_SPACE),
+                                    parent_face_down: q_parent.get(*entity).map(|p| q_card_face.get(p.0).ok() == Some(&CardFace::Down)).unwrap_or(false),
+                                });
                                 move_card(&mut commands, &q_parent, &q_gtransform, &mut q_transform, &q_card, &q_card_face, *entity, target, 0.0, 100);
                                 break
                             }
@@ -327,6 +338,7 @@ pub fn click_system(
 pub fn drop_system(
     mut commands: Commands,
     mut ev_dropped: EventReader<Dropped>,
+    mut actions: ResMut<Actions>,
     q_droppable: Query<(Entity, &Droppable)>,
     q_children: Query<&Children>,
     q_parent: Query<&Parent>,
@@ -363,6 +375,13 @@ pub fn drop_system(
                             0.0
                         }
                     };
+                    actions.0.push(Action::MoveCard {
+                        card: dropped_card.clone(),
+                        from: bottom_entity(*dropped, &q_parent),
+                        to: droppable_entity,
+                        y_offset: local_start_pos.y,
+                        parent_face_down: q_parent.get(*dropped).map(|p| q_card_face.get(p.0).ok() == Some(&CardFace::Down)).unwrap_or(false)
+                    });
                     move_card(&mut commands, &q_parent, &q_global_transform, &mut q_transform, &q_card, &q_card_face, *dropped, top, end_y, 50);
                     was_dropped = true;
                     break

@@ -11,9 +11,9 @@ use rand::prelude::*;
 use crate::mouse_input::{Droppable, Draggable, Clickable, MouseInteraction};
 use crate::menus::{ResetMenuRoot, ResetButton};
 
-// const BACK_GREEN: usize = 5 * 13;
+#[allow(dead_code)] pub const BACK_GREEN: usize = 5 * 13;
 pub const BACK_BLUE: usize = 6 * 13;
-// const BACK_RED: usize = 7 * 13;
+#[allow(dead_code)] pub const BACK_RED: usize = 7 * 13;
 pub const FINAL_STACKS: usize = 7 * 13 + 9;
 pub const EMPTY_SPACE: usize = 6 * 13 + 12;
 
@@ -93,7 +93,7 @@ impl CardKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Component)]
+#[derive(Debug, Clone, Copy, Component, PartialEq)]
 pub struct Card {
     pub suit: Suit,
     pub kind: CardKind,
@@ -224,6 +224,29 @@ pub enum GameState {
     Won,
 }
 
+#[derive(Debug)]
+pub enum Action {
+    /// Move a card from one stack to another
+    MoveCard {
+        /// The card that was moved
+        card: Card,
+        /// The stack entity this card was on
+        from: Entity,
+        /// The stack entity this card was moved to
+        to: Entity,
+        /// The cards old Y offset
+        y_offset: f32,
+        // Whether or not this cards old parent was face down
+        parent_face_down: bool,
+    },
+    /// The deck was reset
+    ResetDeck,
+    /// Flip n cards from the top of the deck
+    Draw(usize),
+}
+
+#[derive(Default)]
+pub struct Actions(pub Vec<Action>);
 
 
 pub fn setup(
@@ -345,8 +368,10 @@ pub fn reset_cards(
     mut game_state: ResMut<State<GameState>>,
     card_texture: Res<CardsTextureHandle>,
     window: Res<WindowDescriptor>,
+    mut actions: ResMut<Actions>,
     mut reset_menu: Query<&mut Style, With<ResetMenuRoot>>
 ) {
+    actions.0.clear();
     let mut rng = rand::thread_rng();
     let mut deck = Vec::new();
     for suit in [Suit::Spades, Suit::Clubs, Suit::Hearts, Suit::Diamonds] {
@@ -510,11 +535,15 @@ pub fn discard_update_system(
             continue
         }
         if i < 2 && Some(*child) != first_child {
-            let mut transform = q_transform.get_mut(*child).unwrap();
-            *transform.translation = *Vec3::new(CARD_STACK_SPACE, 0.0, 1.0);
+            // When we undo a draw, some entities at the top are no longer guaranteed to be there
+            // TODO: Fix this system order or somehow otherwise ensure there are not stale entities
+            if let Ok(mut transform) = q_transform.get_mut(*child) {
+                *transform.translation = *Vec3::new(CARD_STACK_SPACE, 0.0, 1.0);
+            }
         } else {
-            let mut transform = q_transform.get_mut(*child).unwrap();
-            *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
+            if let Ok(mut transform) = q_transform.get_mut(*child) {
+                *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
+            }
         }
     }
 }
@@ -522,6 +551,7 @@ pub fn discard_update_system(
 pub fn win_check_system(
     mut commands: Commands,
     mut game_state: ResMut<State<GameState>>,
+    actions: Res<Actions>,
     q_stacks: Query<(Entity, &Stack)>,
     q_card: Query<(&Card, &CardFace)>,
     q_children: Query<&Children>,
@@ -538,15 +568,11 @@ pub fn win_check_system(
         }
     }
     if completed == 4 {
-        info!("Game Won!");
+        info!("Game Won in {} moves!", actions.0.len());
         game_state.set(GameState::Won).unwrap();
     } else {
         // The only place facedown cards will exist is on the board
         if q_deck.single().cards.len() == 0 && q_card.iter().all(|(_, face)| face == &CardFace::Up) {
-            // This can fail because the discard deck is updated at the end of the frame
-            // while the actual deck can be updated immediately in its system so the deck
-            // can appear empty for a frame while cards are moved onto the discard pile
-            // Need to keep an actual discard vector... Or at the very least a counter
             let discard = q_discard.single();
             let top_discard = top_entity(discard, &q_children);
             if discard == top_discard {
@@ -562,6 +588,7 @@ pub fn auto_solver(
     mut commands: Commands,
     mut game_state: ResMut<State<GameState>>,
     mut solve_timer: ResMut<SolveTimer>,
+    mut actions: ResMut<Actions>,
     time: Res<Time>,
     q_stacks: Query<(Entity, &Stack)>,
     q_card: Query<&Card>,
@@ -581,7 +608,7 @@ pub fn auto_solver(
         match stack.kind {
             StackKind::Ordered(suit) => {
                 let card = q_card.get(top).ok();
-                assert!(stacks.insert(suit, (top, card)).is_none());
+                assert!(stacks.insert(suit, (stack_entity, top, card)).is_none());
             },
             StackKind::Stack => {
                 if top != stack_entity {
@@ -600,9 +627,16 @@ pub fn auto_solver(
     to_solve.sort_by_key(|(_, card)| card.kind.column());
 
     for (candidate, card) in to_solve {
-        if let Some((top, maybe_top_card)) = stacks.get(&card.suit) {
+        if let Some((stack_entity, top, maybe_top_card)) = stacks.get(&card.suit) {
             let stack = Stack::new(StackKind::Ordered(card.suit));
             if stack.can_stack(*maybe_top_card, *card, false) {
+                actions.0.push(Action::MoveCard {
+                    card: card.clone(),
+                    from: bottom_entity(candidate, &q_parent),
+                    to: *stack_entity,
+                    y_offset: CARD_STACK_SPACE,
+                    parent_face_down: false,
+                });
                 move_card(&mut commands, &q_parent, &q_gtransform, &mut q_transform, &q_card, &q_card_face, candidate, *top, 0.0, 100);
                 break
             }
@@ -676,6 +710,111 @@ pub fn move_card(
 
 }
 
+pub fn undo(
+    mut commands: Commands,
+    card_texture: Res<CardsTextureHandle>,
+    mut actions: ResMut<Actions>,
+    mut q_deck: Query<&mut Deck>,
+    keys: Res<Input<KeyCode>>,
+    q_interaction: Query<&MouseInteraction>,
+    q_card: Query<&Card>,
+    q_card_face: Query<&CardFace>,
+    q_children: Query<&Children>,
+    q_parent: Query<&Parent>,
+    q_discard: Query<Entity, With<DiscardPile>>,
+    q_gtransform: Query<&GlobalTransform>,
+    mut q_transform: Query<&mut Transform>,
+) {
+    // If we are currently dragging a card, don't attempt to undo anything
+    if q_interaction.iter().any(|interaction| interaction.is_dragging()) {
+        return
+    }
+
+    if keys.just_pressed(KeyCode::Z) && keys.pressed(KeyCode::LControl) {
+        if let Some(action) = actions.0.pop() {
+            debug!("undo {:?}", action);
+            let mut deck = q_deck.single_mut();
+            let discard_pile = q_discard.single();
+            match action {
+                Action::MoveCard {card, from, to, y_offset, parent_face_down} => {
+                    let mut target = None;
+                    walk_children(Some(to), &q_children, &mut |e| {
+                        if q_card.get(e).ok() == Some(&card) {
+                            target = Some(e)
+                        }
+                    });
+                    if let Some(target) = target {
+                        let top = top_entity(from, &q_children);
+                        let discard_top = top_entity(discard_pile, &q_children);
+                        move_card(&mut commands, &q_parent, &q_gtransform, &mut q_transform, &q_card, &q_card_face, target, top, y_offset, 100);
+                        if top == discard_top {
+                            commands.entity(discard_top).remove::<Draggable>();
+
+                            let discard_positon = q_gtransform.get(discard_pile).unwrap();
+                            let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                            commands.entity(discard_top).insert(Clickable::at(click_position)).insert(Draggable);
+                            commands.entity(target).insert(Draggable);
+                        } else {
+                            if parent_face_down {
+                                commands.entity(top).insert(CardFace::Down);
+                            }
+                        }
+                    }
+                },
+                Action::ResetDeck => {
+                    let mut discard_top = top_entity(discard_pile, &q_children);
+                    while let Some(card) = deck.cards.pop() {
+
+                        let new = commands.spawn_bundle(SpriteSheetBundle {
+                                                texture_atlas: card_texture.0.clone(),
+                                                transform: Transform::from_xyz(0.0, 0.0, 1.0),
+                                                ..Default::default()
+                                            })
+                                            .insert(card)
+                                            .insert(CardFace::Up)
+                                            .id();
+                        commands.entity(discard_top).add_child(new);
+                        discard_top = new;
+                    }
+                    if discard_top != discard_pile {
+                        let discard_positon = q_gtransform.get(discard_pile).unwrap();
+                        let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                        commands.entity(discard_top)
+                                    .insert(Clickable::at(click_position))
+                                    .insert(Draggable);
+                    }
+                },
+                Action::Draw(n) => {
+                    debug!("discard pile: {:?}", discard_pile);
+                    walk_children(Some(discard_pile), &q_children, &mut |e| debug!("  {:?}", e));
+                    let mut discard_top = top_entity(discard_pile, &q_children);
+                    // This cannot happen. If the last action was to draw there _must_ be cards on the discard pile
+                    assert!(discard_top != discard_pile);
+                    commands.entity(discard_top).remove::<Draggable>();
+                    for _ in 0..n {
+                        // This shouldn't fail unless something modified the deck without updating "moves"
+                        let card = q_card.get(discard_top).unwrap();
+                        deck.cards.push(*card);
+
+                        // Must be done in this order
+                        let old_top = discard_top;
+                        discard_top = q_parent.get(discard_top).unwrap().0;
+                        commands.entity(discard_top).remove_children(&[old_top]);
+                        debug!("undo despawning {:?}", old_top);
+                        commands.entity(old_top).despawn();
+                    }
+                    debug!("new discard top: {:?}", discard_top);
+                    if discard_top != discard_pile {
+                        let discard_positon = q_gtransform.get(discard_pile).unwrap();
+                        let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                        commands.entity(discard_top).insert(Clickable::at(click_position)).insert(Draggable);
+                    }
+                },
+            }
+        }
+    }
+}
+
 pub fn walk(mut node: Option<Entity>, query: &Query<&Parent>, func: &mut dyn FnMut(Entity)) {
     while let Some(entity) = node {
         func(entity);
@@ -701,6 +840,13 @@ pub fn walk_children(mut node: Option<Entity>, query: &Query<&Children>, func: &
 pub fn top_entity(mut node: Entity, children: &Query<&Children>) -> Entity {
     while let Some(entity) = children.get(node).ok().map(|c| c.first()).flatten() {
         node = *entity
+    }
+    node
+}
+
+pub fn bottom_entity(mut node: Entity, parent: &Query<&Parent>) -> Entity {
+    while let Some(entity) = parent.get(node).ok().map(|p| p.0) {
+        node = entity
     }
     node
 }

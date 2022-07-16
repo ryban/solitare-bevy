@@ -19,6 +19,7 @@ fn main() {
         .add_plugin(EasingsPlugin)
         .insert_resource(ClearColor(Color::rgb(0.3, 0.7, 0.1)))
         .insert_resource(game::DrawMode::Draw1)
+        .insert_resource(game::Actions::default())
         .add_state(game::GameState::Menu)
         .add_event::<mouse_input::Released>()
         .add_event::<mouse_input::Dropped>()
@@ -44,6 +45,7 @@ fn main() {
         .add_system_set(
             SystemSet::on_update(game::GameState::Playing)
                 .with_system(mouse_input::update_click_timers)
+                .with_system(game::undo.before("mouse"))
                 // This is done before the mouse because the mouse can modify the deck to move cards from the deck to the discard
                 // If there is only 1 or 3 cards in the deck and no discard pile the win system will see it as a win this frame
                 // because the deck is empty but the new discard entities have not spawned yet.
