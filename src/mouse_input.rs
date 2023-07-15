@@ -91,7 +91,7 @@ impl MouseInteraction {
 #[derive(Debug, Clone)]
 pub struct Clicked(Entity, Vec2);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Event)]
 pub struct Released(Entity, Vec2);
 
 #[derive(Debug, Component)]
@@ -105,14 +105,14 @@ pub struct Droppable {
     pub zone: Area,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Event)]
 pub struct Dropped(Entity, Vec3, Vec2);
 
 pub fn clickable_bounds_update_system(
     mut clickables: Query<(&mut Clickable, &GlobalTransform), Changed<GlobalTransform>>,
 ) {
     for (mut clickable, global_transform) in clickables.iter_mut() {
-        clickable.zone.pos = Vec2::new(global_transform.translation.x, global_transform.translation.y) - (clickable.zone.size / 2.0);
+        clickable.zone.pos = Vec2::new(global_transform.translation().x, global_transform.translation().y) - (clickable.zone.size / 2.0);
     }
 }
 
@@ -120,28 +120,30 @@ pub fn mouse_interaction_system(
     mut commands: Commands,
     mouse: Res<Input<MouseButton>>,
     mut mouse_movements: EventReader<MouseMotion>,
-    windows: Res<Windows>,
+    windows: Query<&Window>,
     q_clickable: Query<(Entity, &GlobalTransform, &Clickable)>,
     mut q_interaction: Query<(Entity, &mut MouseInteraction, &GlobalTransform)>,
     mut q_transform: Query<&mut Transform>,
-    q_draggable: Query<&Draggable>,
+    q_draggable: Query<&Draggable, Without<EasingComponent<Transform>>>,
     mut ev_released: EventWriter<Released>,
     mut ev_dropped: EventWriter<Dropped>,
 ) {
-    let window = windows.get_primary().unwrap();
-    let mouse_position = match window.cursor_position() {
+    let window = if let Ok(w) = windows.get_single() {w} else {return};
+    let mut mouse_position = match window.cursor_position() {
         Some(p) => p,
         None => return
     };
+    mouse_position.x -= window.width() / 2.0;
+    mouse_position.y = (window.height() - mouse_position.y) - (window.height() / 2.0);
     if mouse.just_pressed(MouseButton::Left) {
         let mut hovered = q_interaction
                                 .iter_mut()
                                 .filter(|(_, interaction, _)| interaction.is_hovered())
                                 .map(|(_, interaction, gtransform)| (interaction, gtransform))
                                 .collect::<Vec<(Mut<'_, MouseInteraction>, &GlobalTransform)>>();
-        hovered.sort_by(|(_, a), (_, b)| a.translation.z.partial_cmp(&b.translation.z).unwrap_or(std::cmp::Ordering::Equal));
+        hovered.sort_by(|(_, a), (_, b)| a.translation().z.partial_cmp(&b.translation().z).unwrap_or(std::cmp::Ordering::Equal));
         if let Some((interaction, pos)) = hovered.last_mut() {
-            let offset = Vec2::new(pos.translation.x, pos.translation.y) - mouse_position;
+            let offset = Vec2::new(pos.translation().x, pos.translation().y) - mouse_position;
             // Borrow checker wasn't happy unless I used as_mut() and I'm not sure why
             // The borrow out of the Vec seems to mess with it?
             *interaction.as_mut() = MouseInteraction::Clicked(offset);
@@ -195,7 +197,7 @@ pub fn mouse_interaction_system(
                         MouseInteraction::Clicked(_) => {
                             if q_draggable.get(entity).is_ok() {
                                 *interaction = MouseInteraction::Dragging {
-                                    global_start_pos: gpos.translation,
+                                    global_start_pos: gpos.translation(),
                                     local_start_pos: q_transform.get_mut(entity).unwrap().translation,
                                     start_mouse: mouse_position,
                                 };
@@ -206,7 +208,7 @@ pub fn mouse_interaction_system(
 
                             let mouse_delta = mouse_position - start_mouse;
                             let pos = local_start_pos + Vec3::new(mouse_delta.x, mouse_delta.y, 500.0);
-                            *transform.translation = *pos;
+                            transform.translation = pos;
                         },
                         _ => {}
                     }
@@ -257,7 +259,7 @@ pub fn click_system(
             } else {
                 let discard = q_discard.single();
                 let discard_positon = q_gtransform.get(discard).unwrap();
-                let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                let click_position = Vec2::new(discard_positon.translation().x, discard_positon.translation().y);
                 let mut top = top_entity(discard, &q_children);
                 if top != discard {
                     // Make the current top card undraggable
@@ -268,7 +270,7 @@ pub fn click_system(
                 for _ in 0..draw_mode.num() {
                     match deck.cards.pop() {
                         Some(card) => {
-                            let new = commands.spawn_bundle(SpriteSheetBundle {
+                            let new = commands.spawn(SpriteSheetBundle {
                                                     texture_atlas: card_texture.0.clone(),
                                                     transform: Transform::from_xyz(0.0, 0.0, 1.0),
                                                     ..Default::default()
@@ -311,14 +313,14 @@ pub fn click_system(
                                     from: bottom_entity(*entity, &q_parent),
                                     to: stack_entity,
                                     y_offset: q_transform.get(*entity).map(|t| t.translation.y).unwrap_or(CARD_STACK_SPACE),
-                                    parent_face_down: q_parent.get(*entity).map(|p| q_card_face.get(p.0).ok() == Some(&CardFace::Down)).unwrap_or(false),
+                                    parent_face_down: q_parent.get(*entity).map(|p| q_card_face.get(p.get()).ok() == Some(&CardFace::Down)).unwrap_or(false),
                                 });
                                 move_card(&mut commands, &q_parent, &q_gtransform, &mut q_transform, &q_card, &q_card_face, *entity, target, 0.0, 100);
                                 break
                             }
                         }
                     } else {
-                        commands.entity(*entity).insert(WasClicked(Timer::from_seconds(0.5, false)));
+                        commands.entity(*entity).insert(WasClicked(Timer::from_seconds(0.5, TimerMode::Once)));
                     }
                 },
                 CardFace::Down => {
@@ -349,7 +351,7 @@ pub fn drop_system(
     q_global_transform: Query<&GlobalTransform>,
 ) {
     for Dropped(dropped, local_start_pos, _mouse_position) in ev_dropped.iter() {
-        let pos3 = q_global_transform.get(*dropped).unwrap().translation;
+        let pos3 = q_global_transform.get(*dropped).unwrap().translation();
         let pos = Vec2::new(pos3.x, pos3.y);
         let mut was_dropped = false;
         for (droppable_entity, droppable) in q_droppable.iter() {
@@ -380,7 +382,7 @@ pub fn drop_system(
                         from: bottom_entity(*dropped, &q_parent),
                         to: droppable_entity,
                         y_offset: local_start_pos.y,
-                        parent_face_down: q_parent.get(*dropped).map(|p| q_card_face.get(p.0).ok() == Some(&CardFace::Down)).unwrap_or(false)
+                        parent_face_down: q_parent.get(*dropped).map(|p| q_card_face.get(p.get()).ok() == Some(&CardFace::Down)).unwrap_or(false)
                     });
                     move_card(&mut commands, &q_parent, &q_global_transform, &mut q_transform, &q_card, &q_card_face, *dropped, top, end_y, 50);
                     was_dropped = true;

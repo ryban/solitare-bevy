@@ -30,24 +30,26 @@ pub fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut re
     let font_handle = asset_server.load("fonts/FiraSans-Bold.ttf");
 
     commands
-        .spawn_bundle(NodeBundle {
+        .spawn(NodeBundle {
             style: Style {
-                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
-                flex_direction: FlexDirection::ColumnReverse,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
                 align_content: AlignContent::Center,
                 ..Default::default()
             },
-            color: Color::NONE.into(),
+            background_color: Color::NONE.into(),
             ..Default::default()
         })
         .insert(MenuRoot)
         .with_children(|parent| {
             parent
-                .spawn_bundle(ButtonBundle {
+                .spawn(ButtonBundle {
                     style: Style {
-                        size: Size::new(Val::Px(175.0), Val::Px(65.0)),
-                        margin: Rect {
+                        width: Val::Px(175.0),
+                        height: Val::Px(65.0),
+                        margin: UiRect {
                             left: Val::Auto,
                             right: Val::Auto,
                             top: Val::Auto,
@@ -57,29 +59,29 @@ pub fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut re
                         align_items: AlignItems::Center,
                         ..Default::default()
                     },
-                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    background_color: Color::rgb(0.15, 0.15, 0.15).into(),
                     ..Default::default()
                 })
                 .insert(MenuButton::Play)
                 .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
+                    parent.spawn(TextBundle {
+                        text: Text::from_section(
                             "Play",
                             TextStyle {
                                 font: font_handle.clone(),
                                 font_size: 40.0,
                                 color: Color::rgb(0.9, 0.9, 0.9),
-                            },
-                            Default::default(),
+                            }
                         ),
                         ..Default::default()
                     });
                 });
             parent
-                .spawn_bundle(ButtonBundle {
+                .spawn(ButtonBundle {
                     style: Style {
-                        size: Size::new(Val::Px(175.0), Val::Px(65.0)),
-                        margin: Rect {
+                        width: Val::Px(175.0),
+                        height: Val::Px(65.0),
+                        margin: UiRect {
                             top: Val::Px(1.0),
                             bottom: Val::Px(1.0),
                             left: Val::Auto,
@@ -89,29 +91,29 @@ pub fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut re
                         align_items: AlignItems::Center,
                         ..Default::default()
                     },
-                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    background_color: Color::rgb(0.15, 0.15, 0.15).into(),
                     ..Default::default()
                 })
                 .insert(MenuButton::Draw1)
                 .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
+                    parent.spawn(TextBundle {
+                        text: Text::from_section(
                             "Draw One",
                             TextStyle {
                                 font: font_handle.clone(),
                                 font_size: 40.0,
                                 color: Color::rgb(0.9, 0.9, 0.9),
                             },
-                            Default::default(),
                         ),
                         ..Default::default()
                     });
                 });
             parent
-                .spawn_bundle(ButtonBundle {
+                .spawn(ButtonBundle {
                     style: Style {
-                        size: Size::new(Val::Px(175.0), Val::Px(65.0)),
-                        margin: Rect {
+                        width: Val::Px(175.0),
+                        height: Val::Px(65.0),
+                        margin: UiRect {
                             top: Val::Px(1.0),
                             bottom: Val::Auto,
                             left: Val::Auto,
@@ -121,20 +123,19 @@ pub fn setup_menu(mut commands: Commands, asset_server: Res<AssetServer>, mut re
                         align_items: AlignItems::Center,
                         ..Default::default()
                     },
-                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    background_color: Color::rgb(0.15, 0.15, 0.15).into(),
                     ..Default::default()
                 })
                 .insert(MenuButton::Draw3)
                 .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
+                    parent.spawn(TextBundle {
+                        text: Text::from_section(
                             "Draw Three",
                             TextStyle {
                                 font: font_handle.clone(),
                                 font_size: 40.0,
                                 color: Color::rgb(0.9, 0.9, 0.9),
                             },
-                            Default::default(),
                         ),
                         ..Default::default()
                     });
@@ -160,16 +161,16 @@ pub fn hide_menu(mut menu_root: Query<&mut Style, With<MenuRoot>>) {
 
 pub fn main_menu(
     mut draw_mode: ResMut<DrawMode>,
-    mut game_state: ResMut<State<game::GameState>>,
+    mut game_state: ResMut<NextState<game::GameState>>,
     interaction_query: Query<(&MenuButton, &Interaction), Changed<Interaction>>,
-    mut q_buttons: Query<(&MenuButton, &mut UiColor)>,
+    mut q_buttons: Query<(&MenuButton, &mut BackgroundColor)>,
 ) {
     for (button, interaction) in interaction_query.iter() {
         match *interaction {
-            Interaction::Clicked => {
+            Interaction::Pressed => {
                 match button {
                     MenuButton::Play => {
-                        game_state.set(game::GameState::Shuffle).unwrap();
+                        game_state.set(game::GameState::Shuffle);
                     },
                     MenuButton::Draw1 => {
                         *draw_mode = DrawMode::Draw1;
@@ -207,15 +208,15 @@ pub fn main_menu(
 
 pub fn win_screen(
     mut commands: Commands,
-    mut game_state: ResMut<State<game::GameState>>,
+    mut game_state: ResMut<NextState<game::GameState>>,
     interaction_query: Query<(Entity, &Interaction), (Changed<Interaction>, With<Button>)>,
     win_text: Query<Entity, With<WinText>>,
 
 ) {
     for (entity, interaction) in interaction_query.iter() {
         match *interaction {
-            Interaction::Clicked => {
-                game_state.set(game::GameState::Menu).unwrap();
+            Interaction::Pressed => {
+                game_state.set(game::GameState::Menu);
                 commands.entity(entity).despawn_recursive();
                 for e in win_text.iter() {
                     commands.entity(e).despawn_recursive();
@@ -227,13 +228,13 @@ pub fn win_screen(
 }
 
 pub fn reset_game_button(
-    mut game_state: ResMut<State<game::GameState>>,
+    mut game_state: ResMut<NextState<game::GameState>>,
     mut draw_mode: ResMut<DrawMode>,
     interaction_query: Query<(&Interaction, &ResetButton), (Changed<Interaction>, With<Button>)>,
 ) {
     for (interaction, button) in interaction_query.iter() {
         match *interaction {
-            Interaction::Clicked => {
+            Interaction::Pressed => {
                 match button {
                     ResetButton::Draw1 => {
                         *draw_mode = DrawMode::Draw1;
@@ -242,7 +243,7 @@ pub fn reset_game_button(
                         *draw_mode = DrawMode::Draw3;
                     },
                 }
-                game_state.set(game::GameState::Shuffle).unwrap();
+                game_state.set(game::GameState::Shuffle);
             },
             _ => {},
         }
@@ -251,42 +252,34 @@ pub fn reset_game_button(
 
 pub fn spawn_win_screen(
     mut commands: Commands,
-    windows: Res<Windows>,
+    windows: Query<&Window>,
     font: Res<FontHandle>,
     mut reset_menu: Query<&mut Style, With<ResetMenuRoot>>,
 ) {
-    let window = windows.get_primary().unwrap();
-    commands.spawn_bundle(Text2dBundle {
-            text: Text::with_section(
+    let window = if let Ok(w) = windows.get_single() {w} else {return};
+    commands.spawn(Text2dBundle {
+            text: Text::from_section(
                 "You Won!",
                 TextStyle {
                     font: font.0.clone(),
                     font_size: 100.0,
                     color: Color::WHITE,
-                },
-                TextAlignment {
-                    horizontal: HorizontalAlign::Center,
-                    vertical: VerticalAlign::Center,
-                },
-            ),
-            transform: Transform::from_xyz(window.width() / 2.0, window.height() * 0.3, 100.0),
+                }
+            ).with_alignment(TextAlignment::Center),
+            transform: Transform::from_xyz(0.0, -window.height() * 0.1, 100.0),
             ..Default::default()
         })
         .with_children(|parent| {
-            parent.spawn_bundle(Text2dBundle {
-                text: Text::with_section(
+            parent.spawn(Text2dBundle {
+                text: Text::from_section(
                     "You Won!",
                     TextStyle {
                         font: font.0.clone(),
                         font_size: 100.0,
                         color: Color::BLACK,
-                    },
-                    // Note: You can use `Default::default()` in place of the `TextAlignment`
-                    TextAlignment {
-                        horizontal: HorizontalAlign::Center,
-                        vertical: VerticalAlign::Center,
-                    },
-                ),
+                    }
+                )
+                .with_alignment(TextAlignment::Center),
                 transform: Transform::from_xyz(3.0, -3.0, -1.0),
                 ..Default::default()
             });
@@ -294,11 +287,12 @@ pub fn spawn_win_screen(
         .insert(WinText);
 
     commands
-        .spawn_bundle(ButtonBundle {
+        .spawn(ButtonBundle {
             style: Style {
-                size: Size::new(Val::Px(175.0), Val::Px(65.0)),
+                width: Val::Px(175.0),
+                height: Val::Px(65.0),
                 // center button
-                margin: Rect {
+                margin: UiRect {
                     bottom: Val::Px(100.0),
                     top: Val::Auto,
                     left: Val::Auto,
@@ -310,19 +304,18 @@ pub fn spawn_win_screen(
                 align_items: AlignItems::Center,
                 ..Default::default()
             },
-            color: Color::rgb(0.15, 0.15, 0.15).into(),
+            background_color: Color::rgb(0.15, 0.15, 0.15).into(),
             ..Default::default()
         })
         .with_children(|parent| {
-            parent.spawn_bundle(TextBundle {
-                text: Text::with_section(
+            parent.spawn(TextBundle {
+                text: Text::from_section(
                     "New Game",
                     TextStyle {
                         font: font.0.clone(),
                         font_size: 40.0,
                         color: Color::rgb(0.9, 0.9, 0.9),
                     },
-                    Default::default(),
                 ),
                 ..Default::default()
             });

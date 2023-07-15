@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use bevy::prelude::*;
-use bevy::render::camera::{WindowOrigin, ScalingMode};
+use bevy::render::camera::ScalingMode;
 use bevy::render::view::Visibility;
 use bevy::ui::Display;
 use bevy_easings::*;
@@ -151,7 +151,7 @@ impl Area {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Resource)]
 pub enum DrawMode {
     Draw1,
     Draw3,
@@ -166,7 +166,7 @@ impl DrawMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Resource)]
 pub struct SolveTimer(pub Timer);
 
 #[derive(Debug, Default, Component)]
@@ -212,11 +212,14 @@ impl Stack {
 }
 
 /// Resource for holding the card texture atlas
+#[derive(Resource)]
 pub struct CardsTextureHandle(pub Handle<TextureAtlas>);
+#[derive(Resource)]
 pub struct FontHandle(pub Handle<Font>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
 pub enum GameState {
+    #[default]
     Menu,
     Playing,
     AutoSolving,
@@ -245,7 +248,7 @@ pub enum Action {
     Draw(usize),
 }
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub struct Actions(pub Vec<Action>);
 
 
@@ -254,46 +257,43 @@ pub fn setup(
     asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) {
-    let mut camera_bundle = OrthographicCameraBundle::new_2d();
-    camera_bundle.orthographic_projection.window_origin = WindowOrigin::BottomLeft;
-    camera_bundle.orthographic_projection.scaling_mode = ScalingMode::WindowSize;
-    commands.spawn_bundle(camera_bundle);
-
-    commands.spawn_bundle(UiCameraBundle::default());
-    // commands.spawn_bundle(UiCameraBundle::default());
+    let mut camera_bundle = Camera2dBundle::default();
+    // camera_bundle.orthographic_projection.window_origin = WindowOrigin::BottomLeft;
+    camera_bundle.projection.scaling_mode = ScalingMode::WindowSize(1.0);
+    commands.spawn(camera_bundle);
 
     // Pre-load this now
     let font_handle = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands.insert_resource(FontHandle(font_handle.clone()));
     let card_texture_handle = asset_server.load("playingCards.png");
-    let card_atlas = TextureAtlas::from_grid(card_texture_handle, Vec2::new(CARD_WIDTH, CARD_HEIGHT), 13, 8);
+    let card_atlas = TextureAtlas::from_grid(card_texture_handle, Vec2::new(CARD_WIDTH, CARD_HEIGHT), 13, 8, None, None);
     let card_atlas_handle = texture_atlases.add(card_atlas);
     commands.insert_resource(CardsTextureHandle(card_atlas_handle.clone()));
 
     commands
-        .spawn_bundle(NodeBundle {
+        .spawn(NodeBundle {
             style: Style {
-                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
                 display: Display::None,
-                margin: Rect {
+                margin: UiRect {
                     bottom: Val::Px(5.0),
                     left: Val::Px(5.0),
                     top: Val::Auto,
                     right: Val::Auto,
                 },
-                justify_content: JustifyContent::FlexStart,
-                align_content: AlignContent::FlexStart,
                 ..Default::default()
             },
-            color: Color::NONE.into(),
+            background_color: Color::NONE.into(),
             ..Default::default()
         })
         .insert(ResetMenuRoot)
         .with_children(|parent| {
-            parent.spawn_bundle(ButtonBundle {
+            parent.spawn(ButtonBundle {
                     style: Style {
-                        size: Size::new(Val::Px(150.0), Val::Px(20.0)),
-                        margin: Rect {
+                        width: Val::Px(150.0),
+                        height: Val::Px(20.0),
+                        margin: UiRect {
                             right: Val::Px(5.0),
                             ..Default::default()
                         },
@@ -301,31 +301,32 @@ pub fn setup(
                         justify_content: JustifyContent::Center,
                         // vertically center child text
                         align_items: AlignItems::Center,
+                        align_self: AlignSelf::FlexEnd,
                         ..Default::default()
                     },
-                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    background_color: Color::rgb(0.15, 0.15, 0.15).into(),
                     ..Default::default()
                 })
                 .insert(ResetButton::Draw1)
                 .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
+                    parent.spawn(TextBundle {
+                        text: Text::from_section(
                             "New Single Draw",
                             TextStyle {
                                 font: font_handle.clone(),
                                 font_size: 20.0,
                                 color: Color::rgb(0.9, 0.9, 0.9),
                             },
-                            Default::default(),
                         ),
                         ..Default::default()
                     });
                 });
 
-            parent.spawn_bundle(ButtonBundle {
+            parent.spawn(ButtonBundle {
                     style: Style {
-                        size: Size::new(Val::Px(150.0), Val::Px(20.0)),
-                        margin: Rect {
+                        width: Val::Px(150.0),
+                        height: Val::Px(20.0),
+                        margin: UiRect {
                             left: Val::Px(5.0),
                             ..Default::default()
                         },
@@ -333,22 +334,22 @@ pub fn setup(
                         justify_content: JustifyContent::Center,
                         // vertically center child text
                         align_items: AlignItems::Center,
+                        align_self: AlignSelf::FlexEnd,
                         ..Default::default()
                     },
-                    color: Color::rgb(0.15, 0.15, 0.15).into(),
+                    background_color: Color::rgb(0.15, 0.15, 0.15).into(),
                     ..Default::default()
                 })
                 .insert(ResetButton::Draw3)
                 .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
+                    parent.spawn(TextBundle {
+                        text: Text::from_section(
                             "New Triple Draw",
                             TextStyle {
                                 font: font_handle.clone(),
                                 font_size: 20.0,
                                 color: Color::rgb(0.9, 0.9, 0.9),
-                            },
-                            Default::default(),
+                            }
                         ),
                         ..Default::default()
                     });
@@ -358,16 +359,16 @@ pub fn setup(
 
 pub fn clean_cards(mut commands: Commands, cleanup: Query<Entity, Or<(With<Card>, With<Stack>, With<Deck>, With<DiscardPile>)>>) {
     for entity in cleanup.iter() {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 
 }
 
 pub fn reset_cards(
     mut commands: Commands,
-    mut game_state: ResMut<State<GameState>>,
+    mut game_state: ResMut<NextState<GameState>>,
     card_texture: Res<CardsTextureHandle>,
-    window: Res<WindowDescriptor>,
+    windows: Query<&Window>,
     mut actions: ResMut<Actions>,
     mut reset_menu: Query<&mut Style, With<ResetMenuRoot>>
 ) {
@@ -386,16 +387,19 @@ pub fn reset_cards(
 
     deck.shuffle(&mut rng);
 
-    let stacks_y = window.height * 0.6;
+    let window = if let Ok(w) = windows.get_single() {w} else {return};
+    let window_half_width = window.width() / 2.0;
+    let window_half_height = window.height() / 2.0;
+    let stacks_y = window.height() * 0.1;
 
-    fn stack_x(stack: usize) -> f32 {
-        50.0 + (175.0 * (stack as f32)) + (CARD_WIDTH / 2.0)
-    }
+    let stack_x = |stack: usize| {
+        50.0 + (175.0 * (stack as f32)) + (CARD_WIDTH / 2.0) - window_half_width
+    };
 
     let mut stacks: Vec<Vec<Entity>> = (0..7).map(|stack| {
         let pos = Vec2::new(stack_x(stack), stacks_y);
         vec![
-            commands.spawn_bundle(SpriteSheetBundle {
+            commands.spawn(SpriteSheetBundle {
                     texture_atlas: card_texture.0.clone(),
                     sprite: TextureAtlasSprite {
                         index: EMPTY_SPACE,
@@ -406,7 +410,7 @@ pub fn reset_cards(
                 })
                 .insert(Stack::new(StackKind::Stack))
                 // Droppable area extending to the bottom of the screen
-                .insert(Droppable {zone: Area::new(pos.x - CARD_WIDTH / 2.0, 0.0, CARD_WIDTH, pos.y + CARD_HEIGHT)})
+                .insert(Droppable {zone: Area::new(pos.x - CARD_WIDTH / 2.0, -window_half_height, CARD_WIDTH, pos.y + window_half_height + CARD_HEIGHT)})
                 .id()
         ]
     }).collect();
@@ -419,7 +423,7 @@ pub fn reset_cards(
         } else {
             -CARD_STACK_SPACE
         };
-        let new = commands.spawn_bundle(SpriteSheetBundle {
+        let new = commands.spawn(SpriteSheetBundle {
                     texture_atlas: card_texture.0.clone(),
                     transform: Transform::from_xyz(0.0, y, 1.0),
                     ..Default::default()
@@ -439,7 +443,7 @@ pub fn reset_cards(
             } else {
                 -CARD_STACK_SPACE
             };
-            let new = commands.spawn_bundle(SpriteSheetBundle {
+            let new = commands.spawn(SpriteSheetBundle {
                         texture_atlas: card_texture.0.clone(),
                         transform: Transform::from_xyz(0.0, y, 1.0),
                         ..Default::default()
@@ -453,10 +457,10 @@ pub fn reset_cards(
         }
     }
 
-    let deck_pos = Vec2::new((CARD_WIDTH / 2.0) + 50.0, window.height - 25.0 - (CARD_HEIGHT / 2.0));
-    commands.spawn_bundle(SpriteSheetBundle {
+    let deck_pos = Vec2::new((CARD_WIDTH / 2.0) + 50.0 - window_half_width, window_half_height - 25.0 - (CARD_HEIGHT / 2.0));
+    commands.spawn(SpriteSheetBundle {
             texture_atlas: card_texture.0.clone(),
-            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0, window.height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
+            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0 - window_half_width, window_half_height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
             sprite: TextureAtlasSprite {
                 index: BACK_BLUE,
                 ..Default::default()
@@ -467,7 +471,7 @@ pub fn reset_cards(
         .insert(Clickable::at(deck_pos))
         .with_children(|parent| {
             // Empty space below the deck
-            parent.spawn_bundle(SpriteSheetBundle {
+            parent.spawn(SpriteSheetBundle {
                 texture_atlas: card_texture.0.clone(),
                 transform: Transform::from_xyz(0.0, 0.0, -1.0),
                 sprite: TextureAtlasSprite {
@@ -478,8 +482,8 @@ pub fn reset_cards(
             });
         });
 
-    commands.spawn_bundle(SpriteSheetBundle {
-            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0 + 175.0, window.height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
+    commands.spawn(SpriteSheetBundle {
+            transform: Transform::from_xyz((CARD_WIDTH / 2.0) + 50.0 + 175.0 - window_half_width , window_half_height - 25.0 - (CARD_HEIGHT / 2.0), 1.0),
             texture_atlas: card_texture.0.clone(),
             sprite: TextureAtlasSprite {
                 index: EMPTY_SPACE,
@@ -492,8 +496,7 @@ pub fn reset_cards(
     for suit in [Suit::Spades, Suit::Clubs, Suit::Hearts, Suit::Diamonds] {
         let stack_x = (deck_pos.x + (175.0 * 3.0)) + (175.0 * suit.row() as f32);
         let stack_pos = Vec2::new(stack_x, deck_pos.y);
-        // TODO: Add texture for suits
-        commands.spawn_bundle(SpriteSheetBundle {
+        commands.spawn(SpriteSheetBundle {
             texture_atlas: card_texture.0.clone(),
             sprite: TextureAtlasSprite {
                 index: FINAL_STACKS + suit.row(),
@@ -503,19 +506,19 @@ pub fn reset_cards(
             ..Default::default()
         })
         .insert(Stack::new(StackKind::Ordered(suit)))
-        .insert(Droppable {zone: Area::new(stack_pos.x - CARD_WIDTH / 2.0, stack_pos.y - CARD_HEIGHT / 2.0, CARD_WIDTH, CARD_HEIGHT)});
+        .insert(Droppable {zone: Area::new(stack_pos.x - CARD_WIDTH / 2.0 - window_half_width, stack_pos.y - CARD_HEIGHT / 2.0, CARD_WIDTH, CARD_HEIGHT)});
     }
 
     for mut style in reset_menu.iter_mut() {
         style.display = Display::Flex;
     }
 
-    game_state.set(GameState::Playing).unwrap();
+    game_state.set(GameState::Playing);
 }
 
 pub fn deck_update_system(mut decks: Query<(&Deck, &mut Visibility), Changed<Deck>>) {
     for (deck, mut visible) in decks.iter_mut() {
-        visible.is_visible = deck.cards.len() > 0;
+        *visible = if deck.cards.len() > 0 {Visibility::Visible} else {Visibility::Hidden};
     }
 }
 
@@ -538,11 +541,11 @@ pub fn discard_update_system(
             // When we undo a draw, some entities at the top are no longer guaranteed to be there
             // TODO: Fix this system order or somehow otherwise ensure there are not stale entities
             if let Ok(mut transform) = q_transform.get_mut(*child) {
-                *transform.translation = *Vec3::new(CARD_STACK_SPACE, 0.0, 1.0);
+                transform.translation = Vec3::new(CARD_STACK_SPACE, 0.0, 1.0);
             }
         } else {
             if let Ok(mut transform) = q_transform.get_mut(*child) {
-                *transform.translation = *Vec3::new(0.0, 0.0, 1.0);
+                transform.translation = Vec3::new(0.0, 0.0, 1.0);
             }
         }
     }
@@ -550,7 +553,7 @@ pub fn discard_update_system(
 
 pub fn win_check_system(
     mut commands: Commands,
-    mut game_state: ResMut<State<GameState>>,
+    mut game_state: ResMut<NextState<GameState>>,
     actions: Res<Actions>,
     q_stacks: Query<(Entity, &Stack)>,
     q_card: Query<(&Card, &CardFace)>,
@@ -569,7 +572,7 @@ pub fn win_check_system(
     }
     if completed == 4 {
         info!("Game Won in {} moves!", actions.0.len());
-        game_state.set(GameState::Won).unwrap();
+        game_state.set(GameState::Won);
     } else {
         // The only place facedown cards will exist is on the board
         if q_deck.single().cards.len() == 0 && q_card.iter().all(|(_, face)| face == &CardFace::Up) {
@@ -577,8 +580,8 @@ pub fn win_check_system(
             let top_discard = top_entity(discard, &q_children);
             if discard == top_discard {
                 info!("Attempting to auto-solve");
-                commands.insert_resource(SolveTimer(Timer::from_seconds(0.15, true)));
-                game_state.set(GameState::AutoSolving).unwrap();
+                commands.insert_resource(SolveTimer(Timer::from_seconds(0.15, TimerMode::Repeating)));
+                game_state.set(GameState::AutoSolving);
             }
         }
     }
@@ -586,7 +589,7 @@ pub fn win_check_system(
 
 pub fn auto_solver(
     mut commands: Commands,
-    mut game_state: ResMut<State<GameState>>,
+    mut game_state: ResMut<NextState<GameState>>,
     mut solve_timer: ResMut<SolveTimer>,
     mut actions: ResMut<Actions>,
     time: Res<Time>,
@@ -621,7 +624,7 @@ pub fn auto_solver(
     if to_solve.len() == 0 {
         // Just go back to playing and let the normal check logic set it for now to double check that is working
         // This is will get stuck in a loop if its wrong, but it worked from the very beginning so...
-        game_state.set(GameState::Playing).unwrap();
+        game_state.set(GameState::Playing);
     }
     // Always solve them lowest to highest
     to_solve.sort_by_key(|(_, card)| card.kind.column());
@@ -670,27 +673,26 @@ pub fn move_card(
     animation_time: u64,
 ) {
     if let Ok(parent) = q_parent.get(to_move) {
-        commands.entity(parent.0).remove_children(&[to_move]);
-        if let Ok(_) = q_card.get(parent.0) {
-            commands.entity(parent.0).insert(Draggable);
-            if let Ok(face) = q_card_face.get(parent.0) {
-                // Make the new stack top draggable
-                commands.entity(parent.0).insert(Draggable);
+        commands.entity(parent.get()).remove_children(&[to_move]);
+        if q_card.contains(parent.get()) {
+            // Make the new stack top draggable
+            commands.entity(parent.get()).insert(Draggable);
+            if let Ok(face) = q_card_face.get(parent.get()) {
                 if face == &CardFace::Down {
-                    commands.entity(parent.0).insert(CardFace::Up);
+                    commands.entity(parent.get()).insert(CardFace::Up);
                 }
             }
         }
     }
     commands.entity(new_parent).add_child(to_move);
-    let target_pos = q_gtransform.get(new_parent).unwrap().translation;
-    let cur_pos = q_gtransform.get(to_move).unwrap().translation;
+    let target_pos = q_gtransform.get(new_parent).unwrap().translation();
+    let cur_pos = q_gtransform.get(to_move).unwrap().translation();
     let mut start_pos = cur_pos - target_pos;
     start_pos.z = 250.0;
     let end_pos = Transform::from_xyz(0.0, final_y_offset, 250.0);
     let mut cur_transform = q_transform.get_mut(to_move).unwrap();
     // immediately move to the parent relative start position to prevent occasional glitches
-    *cur_transform.translation = *start_pos;
+    cur_transform.translation = start_pos;
     commands
         .entity(to_move)
             .insert(
@@ -716,6 +718,7 @@ pub fn undo(
     mut actions: ResMut<Actions>,
     mut q_deck: Query<&mut Deck>,
     keys: Res<Input<KeyCode>>,
+    mouse: Res<Input<MouseButton>>,
     q_interaction: Query<&MouseInteraction>,
     q_card: Query<&Card>,
     q_card_face: Query<&CardFace>,
@@ -730,7 +733,8 @@ pub fn undo(
         return
     }
 
-    if keys.just_pressed(KeyCode::Z) && keys.pressed(KeyCode::LControl) {
+    // ctrl+Z or right click to undo
+    if actions.0.len() > 0 && (keys.just_pressed(KeyCode::Z) && keys.pressed(KeyCode::ControlLeft)) || mouse.just_released(MouseButton::Right) {
         if let Some(action) = actions.0.pop() {
             debug!("undo {:?}", action);
             let mut deck = q_deck.single_mut();
@@ -751,12 +755,12 @@ pub fn undo(
                             commands.entity(discard_top).remove::<Draggable>();
 
                             let discard_positon = q_gtransform.get(discard_pile).unwrap();
-                            let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                            let click_position = Vec2::new(discard_positon.translation().x, discard_positon.translation().y);
                             commands.entity(discard_top).insert(Clickable::at(click_position)).insert(Draggable);
                             commands.entity(target).insert(Draggable);
                         } else {
                             if parent_face_down {
-                                commands.entity(top).insert(CardFace::Down);
+                                commands.entity(top).insert(CardFace::Down).remove::<Draggable>();
                             }
                         }
                     }
@@ -765,20 +769,22 @@ pub fn undo(
                     let mut discard_top = top_entity(discard_pile, &q_children);
                     while let Some(card) = deck.cards.pop() {
 
-                        let new = commands.spawn_bundle(SpriteSheetBundle {
-                                                texture_atlas: card_texture.0.clone(),
-                                                transform: Transform::from_xyz(0.0, 0.0, 1.0),
-                                                ..Default::default()
-                                            })
-                                            .insert(card)
-                                            .insert(CardFace::Up)
-                                            .id();
+                        let new = commands.spawn(
+                            SpriteSheetBundle {
+                                texture_atlas: card_texture.0.clone(),
+                                transform: Transform::from_xyz(0.0, 0.0, 1.0),
+                                ..Default::default()
+                            })
+                            .insert(card)
+                            .insert(CardFace::Up)
+                            .insert(Clickable::at(Vec2::new(0.0, 0.0)))
+                            .id();
                         commands.entity(discard_top).add_child(new);
                         discard_top = new;
                     }
                     if discard_top != discard_pile {
                         let discard_positon = q_gtransform.get(discard_pile).unwrap();
-                        let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                        let click_position = Vec2::new(discard_positon.translation().x, discard_positon.translation().y);
                         commands.entity(discard_top)
                                     .insert(Clickable::at(click_position))
                                     .insert(Draggable);
@@ -798,7 +804,7 @@ pub fn undo(
 
                         // Must be done in this order
                         let old_top = discard_top;
-                        discard_top = q_parent.get(discard_top).unwrap().0;
+                        discard_top = q_parent.get(discard_top).unwrap().get();
                         commands.entity(discard_top).remove_children(&[old_top]);
                         debug!("undo despawning {:?}", old_top);
                         commands.entity(old_top).despawn();
@@ -806,7 +812,7 @@ pub fn undo(
                     debug!("new discard top: {:?}", discard_top);
                     if discard_top != discard_pile {
                         let discard_positon = q_gtransform.get(discard_pile).unwrap();
-                        let click_position = Vec2::new(discard_positon.translation.x, discard_positon.translation.y);
+                        let click_position = Vec2::new(discard_positon.translation().x, discard_positon.translation().y);
                         commands.entity(discard_top).insert(Clickable::at(click_position)).insert(Draggable);
                     }
                 },
@@ -819,7 +825,7 @@ pub fn walk(mut node: Option<Entity>, query: &Query<&Parent>, func: &mut dyn FnM
     while let Some(entity) = node {
         func(entity);
         node = if let Ok(parent) = query.get(entity) {
-            Some(parent.0)
+            Some(parent.get())
         } else {
             None
         }
@@ -845,7 +851,7 @@ pub fn top_entity(mut node: Entity, children: &Query<&Children>) -> Entity {
 }
 
 pub fn bottom_entity(mut node: Entity, parent: &Query<&Parent>) -> Entity {
-    while let Some(entity) = parent.get(node).ok().map(|p| p.0) {
+    while let Some(entity) = parent.get(node).ok().map(|p| p.get()) {
         node = entity
     }
     node
